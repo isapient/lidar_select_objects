@@ -1,0 +1,8 @@
+<!-- lidar_select_objects.launch -->
+<launch>
+  <!-- Launch your point cloud filtering node -->
+  <node name="lidar_filter_node" pkg="lidar_select_objects" type="point_cloud_filter_node" output="screen">
+    <!-- Add any required parameters here -->
+  </node>
+</launch>
+
