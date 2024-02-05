@@ -153,8 +153,8 @@ add_executable(point_cloud_filter_node src/point_cloud_filter_node.cpp)
 # )
 
 target_link_libraries(point_cloud_filter_node
-  ${catkin_LIBRARIES}
-  ${PCL_LIBRARIES}
+${PCL_LIBRARIES}
+${catkin_LIBRARIES}
 )
 
 #############
