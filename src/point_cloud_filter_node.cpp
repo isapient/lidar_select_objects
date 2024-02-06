@@ -181,10 +181,12 @@ public:
                               const float underlying_th[],
                               const float msq_mult_correction,
                               const float min_abs_correction,
-                              const int min_points)
+                              const int min_points,
+                              const float max_ground_radius)
     {
         Momentums momentums[h_num * v_num]; // zero initialized
         Momentums stats;
+        float max_ground_radius_sq = max_ground_radius * max_ground_radius;
 
         for (int y = 0; y < v_num; y++)
         {
@@ -222,6 +224,9 @@ public:
                         float z0 = plane.a * x + plane.b * y + plane.c;
 
                         if (z > z0 + underlying_th[grid_idx] && underlying_th[grid_idx] != UNKNOWN_GROUND)
+                            continue;
+
+                        if ( x * x + y * y > max_ground_radius_sq)
                             continue;
 
                         // printf("(%.1f; %.1f; %.1f) ", x, y, z);
@@ -298,26 +303,45 @@ public:
     void applyGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
-                        const int x1, const int x2,
-                        const int y1, const int y2,
-                        const float level)
+                        const GroundPlane &plane,
+                        const float underlying_th[])
     {
-        for (int i = x1; i < x2; i++)
+        for (int y = 0; y < v_num; y++)
         {
-            for (int j = y1; j < y2; j++)
+            for (int x = 0; x < h_num; x++)
             {
-                float x = input_cloud->points[i + j * ring_len].x;
-                float y = input_cloud->points[i + j * ring_len].y;
-                float z = input_cloud->points[i + j * ring_len].z;
-                if (z == 0 && x == 0 && y == 0)
+                const int grid_idx = x + y * h_num;
+                const float grid_level = underlying_th[grid_idx];
+
+                if (grid_level == EMPTY_GRID)
                     continue;
-                if (z > level || level == UNKNOWN_GROUND)
+
+                const int x1 = h_block * x;
+                const int x2 = h_block * (x + 1);
+                const int y1 = v_block * y;
+                const int y2 = v_block * (y + 1);
+                for (int i = x1; i < x2; i++)
                 {
-                    other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
-                }
-                else
-                {
-                    plain_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
+                    for (int j = y1; j < y2; j++)
+                    {
+                        int pulse_idx = i + j * ring_len;
+                        float x = input_cloud->points[pulse_idx].x;
+                        float y = input_cloud->points[pulse_idx].y;
+                        float z = input_cloud->points[pulse_idx].z;
+                        if (z == 0 && x == 0 && y == 0)
+                            continue;
+
+                        float z0 = plane.a * x + plane.b * y + plane.c;
+
+                        if (z > z0 + grid_level || grid_level == UNKNOWN_GROUND)
+                        {
+                            other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
+                        }
+                        else
+                        {
+                            plain_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
+                        }
+                    }
                 }
             }
         }
@@ -456,6 +480,8 @@ public:
         copy_grid(grid_med_2, low_level_med);
     }
 
+
+
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
@@ -476,11 +502,13 @@ public:
 
         const float lowpart_sigma_shift = 0;       // keeping 50% of samples under threshold
         const float distillate_sigma_shift = +0.7; // keeping 75% of remaining samples (37% of total samples)
-        const float normal_th_sigma_shift = +5.0;  // measuring 7 sigma above average ground level
+        const float normal_th_sigma_shift = +4.5;  // more than 3 sigma above average ground level
 
         const float no_correction = 0.0;   // 0 centimeters
-        const float min_correction = 0.05; // 5 centimeters
-        const float big_correction = 0.10; // 10 centimeters
+        const float min_correction = 0.05; // add 5 centimeters
+        const float big_correction = 0.20; // add 20 centimeters over ground level
+
+        const float max_ground_radius = 30.0f; // 30 meters
 
         GroundPlane horizontal_plane; // inited by zero coefficients
         float unknown_levels[h_num * v_num];
@@ -493,7 +521,8 @@ public:
                                                 unknown_levels,
                                                 lowpart_sigma_shift,
                                                 no_correction,
-                                                min_points_low);
+                                                min_points_low,
+                                                max_ground_radius);
 
         // printGrids(low_level, low_level, low_level);
 
@@ -506,7 +535,8 @@ public:
                                                half_level_med,
                                                distillate_sigma_shift,
                                                +min_correction,
-                                               min_points_avg);
+                                               min_points_avg,
+                                               max_ground_radius);
 
         grid_median_recovery(quarter_level, quarter_level_med);
 
@@ -518,7 +548,8 @@ public:
                                                   quarter_level_med,
                                                   normal_th_sigma_shift,
                                                   +big_correction,
-                                                  min_points_high);
+                                                  min_points_high,
+                                                  max_ground_radius);
 
         grid_median_recovery(th_level, th_level_med);
 
@@ -529,18 +560,7 @@ public:
         printGrids(half_level, quarter_level, th_level);
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
-        for (int y = 0; y < v_num; y++)
-        {
-            for (int x = 0; x < h_num; x++)
-            {
-                applyGridLevel(input_cloud,
-                               plain_cloud,
-                               other_cloud,
-                               x * h_block, (x + 1) * h_block,
-                               y * v_block, (y + 1) * v_block,
-                               th_level_med[x + y * h_num]);
-            }
-        }
+        applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane,  th_level_med);
     }
 
     void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
