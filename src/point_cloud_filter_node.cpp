@@ -11,6 +11,8 @@
 #include <pcl_ros/filters/extract_indices.h>
 #include <pcl_ros/filters/statistical_outlier_removal.h>
 
+#include <vector>
+
 class PointCloudFilterNode
 {
 public:
@@ -110,21 +112,24 @@ public:
         extract.filter(*other_cloud); // other_cloud contains the non-plane points
     }
 
-    const float NOT_LEVEL = FLT_MIN;
-
     float calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                         const int x1, const int x2,
-                         const int y1, const int y2,
-                         const float underlying_th,
-                         const float msq_mult_correction,
-                         const float min_correction,
-                         const int min_points)
+                        const int x1, const int x2,
+                        const int y1, const int y2,
+                        const float underlying_th,
+                        const float msq_mult_correction,
+                        const float min_abs_correction,
+                        const int min_points)
     {
         float result;
 
         float avg_z1 = 0;
         float avg_z2 = 0;
         int count = 0;
+        int non_zero_count = 0;
+
+        if (underlying_th == EMPTY_GRID)
+            return EMPTY_GRID;
+
         for (int i = x1; i < x2; i++)
         {
             for (int j = y1; j < y2; j++)
@@ -132,9 +137,13 @@ public:
                 float x = input_cloud->points[i + j * ring_len].x;
                 float y = input_cloud->points[i + j * ring_len].y;
                 float z = input_cloud->points[i + j * ring_len].z;
-                if (z == 0 && x == 0 &&  y == 0) continue;
-                if (z > underlying_th && underlying_th != NOT_LEVEL) continue;
-                
+                if (z == 0 && x == 0 && y == 0)
+                    continue;
+                non_zero_count++;
+
+                if (z > underlying_th && underlying_th != UNKNOWN_GROUND)
+                    continue;
+
                 // printf("(%.1f; %.1f; %.1f) ", x, y, z);
 
                 avg_z1 += z;
@@ -149,28 +158,30 @@ public:
             float msq = sqrt(avg_z2 - avg_z1 * avg_z1);
             float correction = msq_mult_correction * msq;
 
-            if(min_correction > 0) {
-                if(correction < min_correction) correction = min_correction;
-            } else if(min_correction < 0) {
-                if(correction > min_correction) correction = min_correction; // negative
+            if ((min_abs_correction > 0 && correction < min_abs_correction) || // apply at least min_correction
+                (min_abs_correction < 0 && correction > min_abs_correction) ) {
+                    correction = min_abs_correction;
             }
-             
-            if(correction <= 0 and correction >= -min_correction) correction = -min_correction;
+
             result = avg_z1 + correction;
         }
         else
         {
-            result = NOT_LEVEL;
+            if (non_zero_count != 0)
+                result = UNKNOWN_GROUND;
+            else
+                result = EMPTY_GRID;
         }
         return result;
     }
 
     void applyGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                         pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
-                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
-                         const int x1, const int x2,
-                         const int y1, const int y2,
-                         const float level) {
+                        pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
+                        pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
+                        const int x1, const int x2,
+                        const int y1, const int y2,
+                        const float level)
+    {
         for (int i = x1; i < x2; i++)
         {
             for (int j = y1; j < y2; j++)
@@ -178,96 +189,235 @@ public:
                 float x = input_cloud->points[i + j * ring_len].x;
                 float y = input_cloud->points[i + j * ring_len].y;
                 float z = input_cloud->points[i + j * ring_len].z;
-                if (z == 0 && x == 0 &&  y == 0) continue;
-                if (z > level || level == NOT_LEVEL){
+                if (z == 0 && x == 0 && y == 0)
+                    continue;
+                if (z > level || level == UNKNOWN_GROUND)
+                {
                     other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
-                } else {
+                }
+                else
+                {
                     plain_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
                 }
             }
         }
     }
 
-        void printGrids(const float level1[], const float level2[], const float level3[])
+    void printGrids(const float level1[], const float level2[], const float level3[])
+    {
+        float v;
+        for (int y = 0; y < v_num; y++)
         {
-            for (int y = 0; y < v_num; y++)
+            for (int x = 0; x < h_num; x++)
             {
-                for (int x = 0; x < h_num; x++) {
-                    if (level1[x+y*h_num] != NOT_LEVEL) printf("%3d ", (int)(10 * level1[x+y*h_num] + 0.5));
-                    else printf(" .. ");
-                }
-                printf("| ");
-                for (int x = 0; x < h_num; x++) {
-                    if (level2[x+y*h_num] != NOT_LEVEL) printf("%3d ", (int)(10 * level2[x+y*h_num] + 0.5));
-                    else printf(" .. ");
-                }
-                printf("| ");
-                for (int x = 0; x < h_num; x++) {
-                    if (level3[x+y*h_num] != NOT_LEVEL) printf("%3d ", (int)(10 * level3[x+y*h_num] + 0.5));
-                    else printf(" .. ");
-                }
-                printf("\n");
+                v = level1[x + y * h_num];
+                if (v == UNKNOWN_GROUND)
+                    printf(" xx ");
+                else if (v == EMPTY_GRID)
+                    printf(" .. ");
+                else
+                    printf("%3d ", (int)(10 * v + 0.5));
+            }
+            printf("| ");
+            for (int x = 0; x < h_num; x++)
+            {
+                v = level2[x + y * h_num];
+                if (v == UNKNOWN_GROUND)
+                    printf(" xx ");
+                else if (v == EMPTY_GRID)
+                    printf(" .. ");
+                else
+                    printf("%3d ", (int)(10 * v + 0.5));
+            }
+            printf("| ");
+            for (int x = 0; x < h_num; x++)
+            {
+                v = level3[x + y * h_num];
+                if (v == UNKNOWN_GROUND)
+                    printf(" xx ");
+                else if (v == EMPTY_GRID)
+                    printf(" .. ");
+                else
+                    printf("%3d ", (int)(10 * v + 0.5));
             }
             printf("\n");
         }
+        printf("\n");
+    }
+
+    void median_3x3(const float src[], float dst[], const int cnt_th, bool process_known_only)
+    {
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
+                if (process_known_only == true && (src[x + y * h_num] == UNKNOWN_GROUND || src[x + y * h_num] == EMPTY_GRID))
+                {
+                    dst[x + y * h_num] = src[x + y * h_num];
+                    continue;
+                }
+                std::vector<float> aperture;
+                aperture.reserve(9);
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        int nx = ((x + dx) + h_num) % h_num; // cycled over lidar rings
+                        int ny = y + dy;
+                        if (ny < 0 || ny >= v_num)
+                            continue;
+                        float val = src[nx + ny * h_num];
+                        if (val == EMPTY_GRID or val == UNKNOWN_GROUND)
+                            continue;
+                        aperture.push_back(val);
+                    }
+                }
+                if (aperture.size() < cnt_th)
+                {
+                    if(src[x + y * h_num] == EMPTY_GRID) dst[x + y * h_num] = EMPTY_GRID;
+                    else dst[x + y * h_num] = UNKNOWN_GROUND;
+                }
+                else
+                {
+                    std::sort(aperture.begin(), aperture.end());
+                    int size = aperture.size();
+                    if (size % 2 == 1)
+                    {
+                        dst[x + y * h_num] = aperture[size / 2];
+                    }
+                    else
+                    {
+                        dst[x + y * h_num] = (aperture[size / 2 - 1] + aperture[size / 2]) / 2;
+                    }
+                }
+            }
+        }
+    }
+
+    void copy_empty_mask(const float src[], float dst[])
+    {
+        for (int p = 0; p < v_num * h_num; p++)
+        {
+            if(src[p] == EMPTY_GRID){
+                dst[p] = EMPTY_GRID;
+            }
+
+        }
+    }
+
+    void copy_grid(const float src[], float dst[])
+    {
+        for (int p = 0; p < v_num * h_num; p++)
+        {
+            dst[p] = src[p];
+        }
+    }
+
+
+    void grid_median_recovery(const float low_level[], float low_level_med[])
+    {
+        const int primary_min_median_neigbours = 3;
+        const int secondary_min_median_neigbours = 3;
+
+        float grid_med_1[h_num * v_num];
+        float grid_med_2[h_num * v_num];
+        median_3x3(low_level, grid_med_1, primary_min_median_neigbours, true);
+        median_3x3(grid_med_1, grid_med_2, primary_min_median_neigbours, true);
+
+        float grid_med_3[h_num * v_num];
+
+        for (int i = 0; i < 16; i++)
+        {
+            median_3x3(grid_med_2, grid_med_3, secondary_min_median_neigbours, false);
+            median_3x3(grid_med_3, grid_med_2, secondary_min_median_neigbours, false);
+        }
+        copy_empty_mask(low_level, grid_med_2);
+        copy_grid(grid_med_2, low_level_med);
+    }
+
 
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
-                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud) {
+                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
+    {
 
-        float low_level[h_num*v_num];
-        float avg_level[h_num*v_num];
-        float th_level[h_num*v_num];
-        
-        float distillate_sigma_shift = -0.7; // keeping half of samples under average
-        float expand_sigma_shift = +7.0;     // capturing back average ground level + over average samples
-        float normal_th_sigma_shift = +4.0;   // measuring 3 sigma above average ground level
-        float min_correction = 0.05;         // 5 centimeters
+        float half_level[h_num * v_num];
+        float half_level_med[h_num * v_num];
+
+        float quarter_level[h_num * v_num];
+        float quarter_level_med[h_num * v_num];
+
+        float th_level[h_num * v_num];
+        float th_level_med[h_num * v_num];
+
+        const int min_points_low = 48;          // about 36%
+        const int min_points_avg = 16;            
+        const int min_points_high = 8;         // about 15%
+
+
+        const float lowpart_sigma_shift = 0;         // keeping 50% of samples under threshold
+        const float distillate_sigma_shift = +0.7;   // keeping 75% of remaining samples (37% of total samples)
+        const float normal_th_sigma_shift = +7.0;    // measuring 7 sigma above average ground level
+
+        const float no_correction = 0.0;            // 0 centimeters
+        const float min_correction = 0.15;          // 15 centimeters
+        const float big_correction = 0.35;          // 15 centimeters
+
 
         for (int y = 0; y < v_num; y++)
         {
             for (int x = 0; x < h_num; x++)
             {
-                low_level[x+y*h_num] = calcGridLevel(input_cloud,
-                                                 x * h_block, (x + 1) * h_block,
-                                                 y * v_block, (y + 1) * v_block,
-                                                 NOT_LEVEL,
-                                                 distillate_sigma_shift,
-                                                 0,
-                                                 min_points);
+                half_level[x + y * h_num] = calcGridLevel(input_cloud,
+                                                         x * h_block, (x + 1) * h_block,
+                                                         y * v_block, (y + 1) * v_block,
+                                                         UNKNOWN_GROUND,
+                                                         lowpart_sigma_shift,
+                                                         no_correction,
+                                                         min_points_low);
             }
         }
+
+        // printGrids(low_level, low_level, low_level);
+
+        grid_median_recovery(half_level, half_level_med);
+        // printGrids(low_level, low_level_med, avg_level);
 
         for (int y = 0; y < v_num; y++)
         {
             for (int x = 0; x < h_num; x++)
             {
-                avg_level[x+y*h_num] = calcGridLevel(input_cloud,
-                                                 x * h_block, (x + 1) * h_block,
-                                                 y * v_block, (y + 1) * v_block,
-                                                 low_level[x+y*h_num],
-                                                 expand_sigma_shift,
-                                                 min_correction,
-                                                 min_points);
+                quarter_level[x + y * h_num] = calcGridLevel(input_cloud,
+                                                         x * h_block, (x + 1) * h_block,
+                                                         y * v_block, (y + 1) * v_block,
+                                                         half_level_med[x + y * h_num],
+                                                         distillate_sigma_shift,
+                                                         +min_correction,
+                                                         min_points_avg);
             }
         }
+
+        grid_median_recovery(quarter_level, quarter_level_med);
+
+        // printGrids(low_level, avg_level, avg_level_med);
 
         for (int y = 0; y < v_num; y++)
         {
             for (int x = 0; x < h_num; x++)
             {
-                th_level[x+y*h_num] = calcGridLevel(input_cloud,
-                                                 x * h_block, (x + 1) * h_block,
-                                                 y * v_block, (y + 1) * v_block,
-                                                 avg_level[x+y*h_num],
-                                                 normal_th_sigma_shift,
-                                                 min_correction,
-                                                 min_points);
+                th_level[x + y * h_num] = calcGridLevel(input_cloud,
+                                                        x * h_block, (x + 1) * h_block,
+                                                        y * v_block, (y + 1) * v_block,
+                                                        quarter_level_med[x + y * h_num],
+                                                        normal_th_sigma_shift,
+                                                        +big_correction,
+                                                        min_points_high);
             }
         }
 
-
-        printGrids(low_level, avg_level, th_level);
+        grid_median_recovery(th_level, th_level_med);
+        printGrids(half_level, quarter_level, th_level);
+        // printGrids(half_level_med, quarter_level_med, th_level_med);
 
         for (int y = 0; y < v_num; y++)
         {
@@ -278,11 +428,10 @@ public:
                                other_cloud,
                                x * h_block, (x + 1) * h_block,
                                y * v_block, (y + 1) * v_block,
-                               th_level[x+y*h_num]);
+                               th_level[x + y * h_num]);
             }
         }
     }
-
 
 
     void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
@@ -330,16 +479,14 @@ private:
     ros::Publisher _noise_cloud_pub;
     ros::Publisher _object_cloud_pub;
     int frame_count = 0;
-        const int ring_len = 512;
-        const int ring_cnt = 64;
-        const int v_num = 32; // in fact for mapping will be used lower half
-        const int h_num = 16;
-        const int v_block = ring_cnt / v_num; // = 4
-        const int h_block = ring_len / h_num; // = 32
-        const int min_points = 12;            // about 10%
-
-
-
+    const int ring_len = 512;
+    const int ring_cnt = 64;
+    const int v_num = 32; // in fact for mapping will be used lower half
+    const int h_num = 16;
+    const int v_block = ring_cnt / v_num; // = 4
+    const int h_block = ring_len / h_num; // = 32
+    const float UNKNOWN_GROUND = FLT_MIN;
+    const float EMPTY_GRID = FLT_MAX;
 };
 
 int main(int argc, char **argv)
