@@ -113,7 +113,6 @@ public:
     const float NOT_LEVEL = FLT_MIN;
 
     float calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                         const int ring_len,
                          const int x1, const int x2,
                          const int y1, const int y2,
                          const float underlying_th,
@@ -169,7 +168,6 @@ public:
     void applyGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
-                         const int ring_len,
                          const int x1, const int x2,
                          const int y1, const int y2,
                          const float level) {
@@ -190,7 +188,7 @@ public:
         }
     }
 
-        void printGrids(const int v_num, const int h_num, const float level1[], const float level2[], const float level3[])
+        void printGrids(const float level1[], const float level2[], const float level3[])
         {
             for (int y = 0; y < v_num; y++)
             {
@@ -216,13 +214,6 @@ public:
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud) {
-        const int ring_len = 512;
-        const int ring_cnt = 64;
-        const int v_num = 32; // in fact for mapping will be used lower half
-        const int h_num = 16;
-        const int v_block = ring_cnt / v_num; // = 4
-        const int h_block = ring_len / h_num; // = 32
-        const int min_points = 12;            // about 10%
 
         float low_level[h_num*v_num];
         float avg_level[h_num*v_num];
@@ -238,7 +229,6 @@ public:
             for (int x = 0; x < h_num; x++)
             {
                 low_level[x+y*h_num] = calcGridLevel(input_cloud,
-                                                 ring_len,
                                                  x * h_block, (x + 1) * h_block,
                                                  y * v_block, (y + 1) * v_block,
                                                  NOT_LEVEL,
@@ -253,7 +243,6 @@ public:
             for (int x = 0; x < h_num; x++)
             {
                 avg_level[x+y*h_num] = calcGridLevel(input_cloud,
-                                                 ring_len,
                                                  x * h_block, (x + 1) * h_block,
                                                  y * v_block, (y + 1) * v_block,
                                                  low_level[x+y*h_num],
@@ -268,7 +257,6 @@ public:
             for (int x = 0; x < h_num; x++)
             {
                 th_level[x+y*h_num] = calcGridLevel(input_cloud,
-                                                 ring_len,
                                                  x * h_block, (x + 1) * h_block,
                                                  y * v_block, (y + 1) * v_block,
                                                  avg_level[x+y*h_num],
@@ -279,7 +267,7 @@ public:
         }
 
 
-        printGrids(v_num, h_num, low_level, avg_level, th_level);
+        printGrids(low_level, avg_level, th_level);
 
         for (int y = 0; y < v_num; y++)
         {
@@ -288,7 +276,6 @@ public:
                 applyGridLevel(input_cloud,
                                plain_cloud,
                                other_cloud,
-                               ring_len,
                                x * h_block, (x + 1) * h_block,
                                y * v_block, (y + 1) * v_block,
                                th_level[x+y*h_num]);
@@ -343,6 +330,15 @@ private:
     ros::Publisher _noise_cloud_pub;
     ros::Publisher _object_cloud_pub;
     int frame_count = 0;
+        const int ring_len = 512;
+        const int ring_cnt = 64;
+        const int v_num = 32; // in fact for mapping will be used lower half
+        const int h_num = 16;
+        const int v_block = ring_cnt / v_num; // = 4
+        const int h_block = ring_len / h_num; // = 32
+        const int min_points = 12;            // about 10%
+
+
 
 };
 
