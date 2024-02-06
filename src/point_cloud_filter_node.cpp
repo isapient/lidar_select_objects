@@ -360,8 +360,8 @@ public:
         const float normal_th_sigma_shift = +7.0;    // measuring 7 sigma above average ground level
 
         const float no_correction = 0.0;            // 0 centimeters
-        const float min_correction = 0.15;          // 15 centimeters
-        const float big_correction = 0.35;          // 15 centimeters
+        const float min_correction = 0.05;          // 5 centimeters
+        const float big_correction = 0.15;          // 15 centimeters
 
 
         for (int y = 0; y < v_num; y++)
@@ -416,6 +416,7 @@ public:
         }
 
         grid_median_recovery(th_level, th_level_med);
+        
         printGrids(half_level, quarter_level, th_level);
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
@@ -428,7 +429,7 @@ public:
                                other_cloud,
                                x * h_block, (x + 1) * h_block,
                                y * v_block, (y + 1) * v_block,
-                               th_level[x + y * h_num]);
+                               th_level_med[x + y * h_num]);
             }
         }
     }
