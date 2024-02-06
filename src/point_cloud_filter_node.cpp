@@ -13,6 +13,69 @@
 
 #include <vector>
 
+struct GroundPlane
+{
+    float a, b, c; // z = a*x + b*y + c
+};
+
+class Momentums
+{
+public:
+    Momentums()
+    {
+        cnt = 0;
+        x = y = z = 0;
+        xx = yy = zz = 0;
+        xy = xz = yz = 0;
+    }
+    void accumulate(float x, float y, float z)
+    {
+        cnt++;
+        this->x += x;
+        this->y += y;
+        this->z += z;
+        this->xx += x * x;
+        this->yy += y * y;
+        this->zz += z * z;
+        this->xy += x * y;
+        this->xz += x * z;
+        this->yz += y * z;
+    }
+    void finalize()
+    {
+        if (cnt == 0)
+            return;
+        x /= cnt;
+        y /= cnt;
+        z /= cnt;
+        xx = xx / cnt - x * x;
+        yy = yy / cnt - y * y;
+        zz = zz / cnt - z * z;
+        xy = xy / cnt - x * y;
+        xz = xz / cnt - x * z;
+        yz = yz / cnt - y * z;
+    }
+    Momentums &operator+=(const Momentums &a)
+    {
+        cnt += a.cnt;
+        x += a.x;
+        y += a.y;
+        z += a.z;
+        xx += a.xx;
+        yy += a.yy;
+        zz += a.zz;
+        xy += a.xy;
+        xz += a.xz;
+        yz += a.yz;
+        return *this;
+    }
+
+    int cnt;
+    float x, y, z;    // first order
+    float xx, yy, zz; // second order
+    float xy, xz, yz; // mixed
+};
+
 class PointCloudFilterNode
 {
 public:
@@ -112,67 +175,124 @@ public:
         extract.filter(*other_cloud); // other_cloud contains the non-plane points
     }
 
-    float calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                        const int x1, const int x2,
-                        const int y1, const int y2,
-                        const float underlying_th,
-                        const float msq_mult_correction,
-                        const float min_abs_correction,
-                        const int min_points)
+    GroundPlane calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
+                              float result_grid[],
+                              const GroundPlane &plane,
+                              const float underlying_th[],
+                              const float msq_mult_correction,
+                              const float min_abs_correction,
+                              const int min_points)
     {
-        float result;
+        Momentums momentums[h_num * v_num]; // zero initialized
+        Momentums stats;
 
-        float avg_z1 = 0;
-        float avg_z2 = 0;
-        int count = 0;
-        int non_zero_count = 0;
-
-        if (underlying_th == EMPTY_GRID)
-            return EMPTY_GRID;
-
-        for (int i = x1; i < x2; i++)
+        for (int y = 0; y < v_num; y++)
         {
-            for (int j = y1; j < y2; j++)
+            for (int x = 0; x < h_num; x++)
             {
-                float x = input_cloud->points[i + j * ring_len].x;
-                float y = input_cloud->points[i + j * ring_len].y;
-                float z = input_cloud->points[i + j * ring_len].z;
-                if (z == 0 && x == 0 && y == 0)
-                    continue;
-                non_zero_count++;
+                const int x1 = h_block * x;
+                const int x2 = h_block * (x + 1);
+                const int y1 = v_block * y;
+                const int y2 = v_block * (y + 1);
+                int grid_idx = x + y * h_num;
 
-                if (z > underlying_th && underlying_th != UNKNOWN_GROUND)
-                    continue;
+                float result;
 
-                // printf("(%.1f; %.1f; %.1f) ", x, y, z);
+                float avg_z1 = 0;
+                float avg_z2 = 0;
+                int count = 0;
+                int non_zero_count = 0;
 
-                avg_z1 += z;
-                avg_z2 += z * z;
-                count++;
+                if (underlying_th[grid_idx] == EMPTY_GRID)
+                    result_grid[grid_idx] = EMPTY_GRID;
+
+                for (int i = x1; i < x2; i++)
+                {
+                    for (int j = y1; j < y2; j++)
+                    {
+                        int pulse_idx = i + j * ring_len;
+                        float x = input_cloud->points[pulse_idx].x;
+                        float y = input_cloud->points[pulse_idx].y;
+                        float z = input_cloud->points[pulse_idx].z;
+                        if (z == 0 && x == 0 && y == 0)
+                            continue;
+
+                        non_zero_count++;
+
+                        float z0 = plane.a * x + plane.b * y + plane.c;
+
+                        if (z > z0 + underlying_th[grid_idx] && underlying_th[grid_idx] != UNKNOWN_GROUND)
+                            continue;
+
+                        // printf("(%.1f; %.1f; %.1f) ", x, y, z);
+                        momentums[grid_idx].accumulate(x, y, z);
+
+                        // avg_z1 += z;
+                        // avg_z2 += z * z;
+                        // count++;
+                    }
+                }
+
+                if (momentums[grid_idx].cnt < min_points)
+                {
+                    if (non_zero_count != 0)
+                        result_grid[grid_idx] = UNKNOWN_GROUND;
+                    else
+                        result_grid[grid_idx] = EMPTY_GRID;
+                }
+                else
+                {
+                    result_grid[grid_idx] = 0; // filler - should be calculated later
+                    stats += momentums[grid_idx];
+                }
             }
         }
-        if (count >= min_points)
+
+        stats.finalize();
+        GroundPlane fine_plane;
+        float denominator = (stats.xx * stats.yy - stats.xy * stats.xy);
+        if (denominator > 0.00001f || denominator < -0.00001f)
         {
-            avg_z1 /= count;
-            avg_z2 /= count;
-            float msq = sqrt(avg_z2 - avg_z1 * avg_z1);
-            float correction = msq_mult_correction * msq;
-
-            if ((min_abs_correction > 0 && correction < min_abs_correction) || // apply at least min_correction
-                (min_abs_correction < 0 && correction > min_abs_correction) ) {
-                    correction = min_abs_correction;
-            }
-
-            result = avg_z1 + correction;
+            fine_plane.a = (stats.xz * stats.yy - stats.yz * stats.xy) / denominator;
+            fine_plane.b = (stats.yz * stats.xx - stats.xz * stats.xy) / denominator;
+            fine_plane.c = stats.z - (fine_plane.a * stats.x + fine_plane.b * stats.y);
         }
         else
         {
-            if (non_zero_count != 0)
-                result = UNKNOWN_GROUND;
-            else
-                result = EMPTY_GRID;
+            fine_plane.a = 0;
+            fine_plane.b = 0;
+            fine_plane.c = 0;
         }
-        return result;
+
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
+                int grid_idx = x + y * h_num;
+                if (result_grid[grid_idx] != EMPTY_GRID && result_grid[grid_idx] != UNKNOWN_GROUND)
+                {
+                    Momentums over_plane = momentums[grid_idx];
+                    over_plane.z -= fine_plane.a * over_plane.x +
+                                    fine_plane.b * over_plane.y +
+                                    fine_plane.c * over_plane.cnt;
+
+                    momentums[grid_idx].finalize();
+                    over_plane.finalize();
+
+                    float msq = sqrt(momentums[grid_idx].zz); // original z MSQ
+                    float correction = msq_mult_correction * msq;
+
+                    if ((min_abs_correction > 0 && correction < min_abs_correction) || // apply at least min_correction
+                        (min_abs_correction < 0 && correction > min_abs_correction))
+                    {
+                        correction = min_abs_correction;
+                    }
+
+                    result_grid[grid_idx] = over_plane.z + correction; // aligned to plane z level
+                }
+            }
+        }
+        return fine_plane;
     }
 
     void applyGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
@@ -274,8 +394,10 @@ public:
                 }
                 if (aperture.size() < cnt_th)
                 {
-                    if(src[x + y * h_num] == EMPTY_GRID) dst[x + y * h_num] = EMPTY_GRID;
-                    else dst[x + y * h_num] = UNKNOWN_GROUND;
+                    if (src[x + y * h_num] == EMPTY_GRID)
+                        dst[x + y * h_num] = EMPTY_GRID;
+                    else
+                        dst[x + y * h_num] = UNKNOWN_GROUND;
                 }
                 else
                 {
@@ -298,10 +420,10 @@ public:
     {
         for (int p = 0; p < v_num * h_num; p++)
         {
-            if(src[p] == EMPTY_GRID){
+            if (src[p] == EMPTY_GRID)
+            {
                 dst[p] = EMPTY_GRID;
             }
-
         }
     }
 
@@ -312,7 +434,6 @@ public:
             dst[p] = src[p];
         }
     }
-
 
     void grid_median_recovery(const float low_level[], float low_level_med[])
     {
@@ -335,7 +456,6 @@ public:
         copy_grid(grid_med_2, low_level_med);
     }
 
-
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
@@ -350,73 +470,62 @@ public:
         float th_level[h_num * v_num];
         float th_level_med[h_num * v_num];
 
-        const int min_points_low = 48;          // about 36%
-        const int min_points_avg = 16;            
-        const int min_points_high = 8;         // about 15%
+        const int min_points_low = 48; // about 36%
+        const int min_points_avg = 16;
+        const int min_points_high = 8; // about 15%
 
+        const float lowpart_sigma_shift = 0;       // keeping 50% of samples under threshold
+        const float distillate_sigma_shift = +0.7; // keeping 75% of remaining samples (37% of total samples)
+        const float normal_th_sigma_shift = +5.0;  // measuring 7 sigma above average ground level
 
-        const float lowpart_sigma_shift = 0;         // keeping 50% of samples under threshold
-        const float distillate_sigma_shift = +0.7;   // keeping 75% of remaining samples (37% of total samples)
-        const float normal_th_sigma_shift = +7.0;    // measuring 7 sigma above average ground level
+        const float no_correction = 0.0;   // 0 centimeters
+        const float min_correction = 0.05; // 5 centimeters
+        const float big_correction = 0.10; // 10 centimeters
 
-        const float no_correction = 0.0;            // 0 centimeters
-        const float min_correction = 0.05;          // 5 centimeters
-        const float big_correction = 0.15;          // 15 centimeters
+        GroundPlane horizontal_plane; // inited by zero coefficients
+        float unknown_levels[h_num * v_num];
+        for (int i = 0; i < v_num * h_num; i++)
+            unknown_levels[i] = UNKNOWN_GROUND;
 
-
-        for (int y = 0; y < v_num; y++)
-        {
-            for (int x = 0; x < h_num; x++)
-            {
-                half_level[x + y * h_num] = calcGridLevel(input_cloud,
-                                                         x * h_block, (x + 1) * h_block,
-                                                         y * v_block, (y + 1) * v_block,
-                                                         UNKNOWN_GROUND,
-                                                         lowpart_sigma_shift,
-                                                         no_correction,
-                                                         min_points_low);
-            }
-        }
+        GroundPlane dirty_plane = calcGridLevel(input_cloud,
+                                                half_level,
+                                                horizontal_plane,
+                                                unknown_levels,
+                                                lowpart_sigma_shift,
+                                                no_correction,
+                                                min_points_low);
 
         // printGrids(low_level, low_level, low_level);
 
         grid_median_recovery(half_level, half_level_med);
         // printGrids(low_level, low_level_med, avg_level);
 
-        for (int y = 0; y < v_num; y++)
-        {
-            for (int x = 0; x < h_num; x++)
-            {
-                quarter_level[x + y * h_num] = calcGridLevel(input_cloud,
-                                                         x * h_block, (x + 1) * h_block,
-                                                         y * v_block, (y + 1) * v_block,
-                                                         half_level_med[x + y * h_num],
-                                                         distillate_sigma_shift,
-                                                         +min_correction,
-                                                         min_points_avg);
-            }
-        }
+        GroundPlane fine_plane = calcGridLevel(input_cloud,
+                                               quarter_level,
+                                               dirty_plane,
+                                               half_level_med,
+                                               distillate_sigma_shift,
+                                               +min_correction,
+                                               min_points_avg);
 
         grid_median_recovery(quarter_level, quarter_level_med);
 
         // printGrids(low_level, avg_level, avg_level_med);
 
-        for (int y = 0; y < v_num; y++)
-        {
-            for (int x = 0; x < h_num; x++)
-            {
-                th_level[x + y * h_num] = calcGridLevel(input_cloud,
-                                                        x * h_block, (x + 1) * h_block,
-                                                        y * v_block, (y + 1) * v_block,
-                                                        quarter_level_med[x + y * h_num],
-                                                        normal_th_sigma_shift,
-                                                        +big_correction,
-                                                        min_points_high);
-            }
-        }
+        GroundPlane perfect_plane = calcGridLevel(input_cloud,
+                                                  th_level,
+                                                  fine_plane,
+                                                  quarter_level_med,
+                                                  normal_th_sigma_shift,
+                                                  +big_correction,
+                                                  min_points_high);
 
         grid_median_recovery(th_level, th_level_med);
-        
+
+        printf("dirty_plane:   z = %.3f * x + %.3f *y + %.3f\t\t\t", dirty_plane.a, dirty_plane.b, dirty_plane.c);
+        printf("fine_plane:    z = %.3f * x + %.3f *y + %.3f\t\t\t", fine_plane.a, fine_plane.b, fine_plane.c);
+        printf("perfect_plane: z = %.3f * x + %.3f *y + %.3f\n", perfect_plane.a, perfect_plane.b, perfect_plane.c);
+
         printGrids(half_level, quarter_level, th_level);
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
@@ -433,7 +542,6 @@ public:
             }
         }
     }
-
 
     void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
     {
