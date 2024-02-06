@@ -17,15 +17,15 @@ public:
     PointCloudFilterNode()
     {
         // Initialize ROS node handle
-        nh_ = ros::NodeHandle("~"); // Private node handle for parameters
+        _nh = ros::NodeHandle("~"); // Private node handle for parameters
 
         // Subscribe to the input point cloud topic
-        input_cloud_sub_ = nh_.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os1/points", 1,
+        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os1/points", 1,
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
 
         // Create publishers for separated point clouds
-        noise_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
-        object_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
+        _noise_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
+        _object_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
 
         // Set filtering parameters
         // You can add parameters for filtering here
@@ -117,7 +117,8 @@ public:
                          const int x1, const int x2,
                          const int y1, const int y2,
                          const float underlying_th,
-                         const float msq_correction,
+                         const float msq_mult_correction,
+                         const float min_correction,
                          const int min_points)
     {
         float result;
@@ -147,7 +148,16 @@ public:
             avg_z1 /= count;
             avg_z2 /= count;
             float msq = sqrt(avg_z2 - avg_z1 * avg_z1);
-            result = avg_z1 - msq_correction * msq;
+            float correction = msq_mult_correction * msq;
+
+            if(min_correction > 0) {
+                if(correction < min_correction) correction = min_correction;
+            } else if(min_correction < 0) {
+                if(correction > min_correction) correction = min_correction; // negative
+            }
+             
+            if(correction <= 0 and correction >= -min_correction) correction = -min_correction;
+            result = avg_z1 + correction;
         }
         else
         {
@@ -180,6 +190,28 @@ public:
         }
     }
 
+        void printGrids(const int v_num, const int h_num, const float level1[], const float level2[], const float level3[])
+        {
+            for (int y = 0; y < v_num; y++)
+            {
+                for (int x = 0; x < h_num; x++) {
+                    if (level1[x+y*h_num] != NOT_LEVEL) printf("%3d ", (int)(10 * level1[x+y*h_num] + 0.5));
+                    else printf(" .. ");
+                }
+                printf("| ");
+                for (int x = 0; x < h_num; x++) {
+                    if (level2[x+y*h_num] != NOT_LEVEL) printf("%3d ", (int)(10 * level2[x+y*h_num] + 0.5));
+                    else printf(" .. ");
+                }
+                printf("| ");
+                for (int x = 0; x < h_num; x++) {
+                    if (level3[x+y*h_num] != NOT_LEVEL) printf("%3d ", (int)(10 * level3[x+y*h_num] + 0.5));
+                    else printf(" .. ");
+                }
+                printf("\n");
+            }
+            printf("\n");
+        }
 
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
@@ -192,39 +224,79 @@ public:
         const int h_block = ring_len / h_num; // = 32
         const int min_points = 12;            // about 10%
 
-        float level[h_num][v_num];
-        float msq_correction = 0.0;
+        float low_level[h_num*v_num];
+        float avg_level[h_num*v_num];
+        float th_level[h_num*v_num];
+        
+        float distillate_sigma_shift = -0.7; // keeping half of samples under average
+        float expand_sigma_shift = +7.0;     // capturing back average ground level + over average samples
+        float normal_th_sigma_shift = +4.0;   // measuring 3 sigma above average ground level
+        float min_correction = 0.05;         // 5 centimeters
+
         for (int y = 0; y < v_num; y++)
         {
             for (int x = 0; x < h_num; x++)
             {
-                float under_avg = calcGridLevel(input_cloud,
+                low_level[x+y*h_num] = calcGridLevel(input_cloud,
                                                  ring_len,
                                                  x * h_block, (x + 1) * h_block,
                                                  y * v_block, (y + 1) * v_block,
                                                  NOT_LEVEL,
-                                                 msq_correction,
+                                                 distillate_sigma_shift,
+                                                 0,
                                                  min_points);
-                level[x][y] = under_avg;
+            }
+        }
 
-                if(under_avg!=NOT_LEVEL){
-                    printf("%4.1f ", under_avg);
-                } else {
-                    printf(" ... ");
-                }
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
+                avg_level[x+y*h_num] = calcGridLevel(input_cloud,
+                                                 ring_len,
+                                                 x * h_block, (x + 1) * h_block,
+                                                 y * v_block, (y + 1) * v_block,
+                                                 low_level[x+y*h_num],
+                                                 expand_sigma_shift,
+                                                 min_correction,
+                                                 min_points);
+            }
+        }
 
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
+                th_level[x+y*h_num] = calcGridLevel(input_cloud,
+                                                 ring_len,
+                                                 x * h_block, (x + 1) * h_block,
+                                                 y * v_block, (y + 1) * v_block,
+                                                 avg_level[x+y*h_num],
+                                                 normal_th_sigma_shift,
+                                                 min_correction,
+                                                 min_points);
+            }
+        }
+
+
+        printGrids(v_num, h_num, low_level, avg_level, th_level);
+
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
                 applyGridLevel(input_cloud,
                                plain_cloud,
                                other_cloud,
                                ring_len,
                                x * h_block, (x + 1) * h_block,
                                y * v_block, (y + 1) * v_block,
-                               level[x][y]);
+                               th_level[x+y*h_num]);
             }
-            printf("\n");
         }
-        printf("\n");
     }
+
+
 
     void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
     {
@@ -236,9 +308,11 @@ public:
         pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
-        // Prefilter outliers in the input cloud
-        // prefilterOutliers(pcl_cloud, work_cloud, noise_cloud);
+        // Separate plain points from other cloud
         findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+
+        frame_count++;
+        printf("frame_count = %d\n", frame_count);
 
         // Create separate point cloud containers for plain and other points
         pcl::PointCloud<pcl::PointXYZ>::Ptr plain_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -259,17 +333,17 @@ public:
         noise_ros_cloud.header = input_cloud->header;
 
         // Publish the separated point clouds
-        object_cloud_pub_.publish(object_ros_cloud);
-        noise_cloud_pub_.publish(noise_ros_cloud);
+        _object_cloud_pub.publish(object_ros_cloud);
+        _noise_cloud_pub.publish(noise_ros_cloud);
     }
 
 private:
-    ros::NodeHandle nh_;
-    ros::Subscriber input_cloud_sub_;
-    ros::Publisher noise_cloud_pub_;
-    ros::Publisher object_cloud_pub_;
+    ros::NodeHandle _nh;
+    ros::Subscriber _input_cloud_sub;
+    ros::Publisher _noise_cloud_pub;
+    ros::Publisher _object_cloud_pub;
+    int frame_count = 0;
 
-    // Define additional member variables and parameters as needed
 };
 
 int main(int argc, char **argv)
