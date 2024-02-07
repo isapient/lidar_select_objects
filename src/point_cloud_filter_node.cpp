@@ -91,7 +91,7 @@ public:
         _nh = ros::NodeHandle("~"); // Private node handle for parameters
 
         // Subscribe to the input point cloud topic
-        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os1/points", 1,
+        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>(_input_topic, 1,
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
 
         // Create publishers for separated point clouds
@@ -342,12 +342,14 @@ public:
         seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
         seg.setMethodType(pcl::SAC_RANSAC);
 
-        float threshold = 0.25;
-        float max_iteration = 1000;
         // float probability = 0.99;
 
-        seg.setDistanceThreshold(threshold); // Distance need to be adjusted according to the obj
-        seg.setMaxIterations(max_iteration);
+        seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
+        seg.setEpsAngle((7.f * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
+        seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
+
+        seg.setDistanceThreshold(0.10f);
+        seg.setMaxIterations(1000);
         // seg.setProbability(probability);
 
         seg.setInputCloud(input_cloud);
@@ -385,34 +387,34 @@ public:
         // // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
     }
 
-    void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
-    {
-        // Segment the ground
-        pcl::ModelCoefficients::Ptr plane(new pcl::ModelCoefficients);
-        pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-        plane->values.resize(4); // Make room for a plane equation (ax+by+cz+d=0)
+    // void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
+    //                        pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
+    //                        pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
+    // {
+    //     // Segment the ground
+    //     pcl::ModelCoefficients::Ptr plane(new pcl::ModelCoefficients);
+    //     pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+    //     plane->values.resize(4); // Make room for a plane equation (ax+by+cz+d=0)
 
-        pcl::SACSegmentation<pcl::PointXYZ> seg;  // Create the segmentation object
-        seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
-        seg.setEpsAngle((12. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
-        seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
-        seg.setMethodType(pcl::SAC_RANSAC);
-        seg.setModelType(pcl::SACMODEL_PLANE);
-        seg.setDistanceThreshold(0.25f);
-        seg.setInputCloud(input_cloud);
-        seg.segment(*inliers, *plane);
+    //     pcl::SACSegmentation<pcl::PointXYZ> seg;  // Create the segmentation object
+    //     seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
+    //     seg.setEpsAngle((12. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
+    //     seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
+    //     seg.setMethodType(pcl::SAC_RANSAC);
+    //     seg.setModelType(pcl::SACMODEL_PLANE);
+    //     seg.setDistanceThreshold(0.25f);
+    //     seg.setInputCloud(input_cloud);
+    //     seg.segment(*inliers, *plane);
 
-        // Extract inliers
-        pcl::ExtractIndices<pcl::PointXYZ> extract;
-        extract.setInputCloud(input_cloud);
-        extract.setIndices(inliers);
-        extract.setNegative(false);   // Extract the inliers
-        extract.filter(*plain_cloud); // plain_cloud contains the plane
-        extract.setNegative(true);    // Extract the outliers
-        extract.filter(*other_cloud); // other_cloud contains the non-plane points
-    }
+    //     // Extract inliers
+    //     pcl::ExtractIndices<pcl::PointXYZ> extract;
+    //     extract.setInputCloud(input_cloud);
+    //     extract.setIndices(inliers);
+    //     extract.setNegative(false);   // Extract the inliers
+    //     extract.filter(*plain_cloud); // plain_cloud contains the plane
+    //     extract.setNegative(true);    // Extract the outliers
+    //     extract.filter(*other_cloud); // other_cloud contains the non-plane points
+    // }
 
     GroundPlane calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                               float result_grid[],
@@ -577,11 +579,13 @@ public:
         const float min_correction = 0.10; // add 5 centimeters (about lidar linear accuracy)
         const float big_correction = 0.25; // add more over ground level
 
-        const float rough_ground_radius = 20.0f; // estimate ground in this radius
-        const float fine_ground_radius = 20.0f;  // estimate ground in this radius
-        const float max_ground_radius = 20.0f;   // estimate ground in this radius
+        const float rough_ground_radius = 10.0f; // estimate ground in this radius
+        const float fine_ground_radius = 15.0f;  // estimate ground in this radius
+        const float th_ground_radius = 25.0f;   // estimate ground in this radius
 
-        const float min_ground_radius = 3.0f; // buggy body size
+        const float rough_minradius = 7.0f; // buggy body size
+        const float fine_minradius = 5.0f; // buggy body size
+        const float th_minradius = 3.0f; // buggy body size
 
         const float rough_min_underground = 3.0f;
         const float fine_min_underground = 0.5f;
@@ -600,7 +604,7 @@ public:
                                                 no_correction,
                                                 min_points_low,
                                                 rough_ground_radius,
-                                                min_ground_radius,
+                                                rough_minradius,
                                                 rough_min_underground);
 
         // printGrids(low_level, low_level, low_level);
@@ -616,7 +620,7 @@ public:
                                                +min_correction,
                                                min_points_avg,
                                                fine_ground_radius,
-                                               min_ground_radius,
+                                               fine_minradius,
                                                fine_min_underground);
 
         grid_median_recovery(quarter_level, quarter_level_med);
@@ -630,8 +634,8 @@ public:
                                                   normal_th_sigma_shift,
                                                   +big_correction,
                                                   min_points_high,
-                                                  max_ground_radius,
-                                                  min_ground_radius,
+                                                  th_ground_radius,
+                                                  th_minradius,
                                                   th_min_underground);
 
         grid_median_recovery(th_level, th_level_med);
@@ -693,8 +697,9 @@ private:
     ros::Publisher _noise_cloud_pub;
     ros::Publisher _object_cloud_pub;
     int frame_count = 0;
-    const int ring_len = 512;
+    std::string _input_topic = "/mbuggy/os1/points";
     const int ring_cnt = 64; // 64 for os1, 128 for os2 and os3
+    const int ring_len = 512;
     const int v_num = 32; // in fact for mapping will be used lower half
     const int h_num = 16;
     const int v_block = ring_cnt / v_num; // = 4
