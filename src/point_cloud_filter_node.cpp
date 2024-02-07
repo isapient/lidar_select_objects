@@ -8,11 +8,15 @@
 #include <pcl_msgs/ModelCoefficients.h>
 // #include <pcl_ros/point_indices.h>
 #include <pcl_ros/segmentation/sac_segmentation.h>
+#include <pcl_ros/segmentation/extract_clusters.h>
 #include <pcl_ros/filters/extract_indices.h>
 #include <pcl_ros/filters/statistical_outlier_removal.h>
 // #include <pcl_ros/common/time.h>
 
 #include <vector>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 struct GroundPlane
 {
@@ -29,15 +33,11 @@ public:
     int cnt;
     float x, y, z; // first order
     float zz;      // second order
-    // float xx, yy, zz; // second order
-    // float xy, xz, yz; // mixed
     Momentums()
     {
         cnt = 0;
         x = y = z = 0;
         zz = 0;
-        // xx = yy = zz = 0;
-        // xy = xz = yz = 0;
     }
     void accumulate(float x, float y, float z)
     {
@@ -46,11 +46,6 @@ public:
         this->y += y;
         this->z += z;
         this->zz += z * z;
-        // this->xx += x * x;
-        // this->yy += y * y;
-        // this->xy += x * y;
-        // this->xz += x * z;
-        // this->yz += y * z;
     }
     void finalize()
     {
@@ -60,11 +55,6 @@ public:
         y /= cnt;
         z /= cnt;
         zz = zz / cnt - z * z;
-        // xx = xx / cnt - x * x;
-        // yy = yy / cnt - y * y;
-        // xy = xy / cnt - x * y;
-        // xz = xz / cnt - x * z;
-        // yz = yz / cnt - y * z;
     }
     Momentums &operator+=(const Momentums &a)
     {
@@ -73,11 +63,6 @@ public:
         y += a.y;
         z += a.z;
         zz += a.zz;
-        // xx += a.xx;
-        // yy += a.yy;
-        // xy += a.xy;
-        // xz += a.xz;
-        // yz += a.yz;
         return *this;
     }
 };
@@ -95,8 +80,9 @@ public:
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
 
         // Create publishers for separated point clouds
-        _noise_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
-        _object_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
+        _object_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
+        _ground_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/ground", 1);
+        _noise_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
 
         // Set filtering parameters
         // You can add parameters for filtering here
@@ -156,8 +142,11 @@ public:
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
                         const GroundPlane &plane,
-                        const float underlying_th[])
+                        const float underlying_th[],
+                        std::vector<float> &range_aperture)
     {
+        range_aperture.resize(ring_cnt * ring_len);
+
         for (int y = 0; y < v_num; y++)
         {
             for (int x = 0; x < h_num; x++)
@@ -181,16 +170,21 @@ public:
                         float y = input_cloud->points[pulse_idx].y;
                         float z = input_cloud->points[pulse_idx].z;
                         if (z == 0 && x == 0 && y == 0)
+                        {
+                            range_aperture[pulse_idx] = 0; // EMPTY
                             continue;
+                        }
 
                         float z0 = plane.a * x + plane.b * y + plane.c;
 
                         if (z > z0 + grid_level || grid_level == UNKNOWN_GROUND)
                         {
+                            range_aperture[pulse_idx] = sqrt(x * x + y * y + z * z);
                             other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
                         }
                         else
                         {
+                            range_aperture[pulse_idx] = -1; // GROUND
                             plain_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
                         }
                     }
@@ -356,35 +350,6 @@ public:
         seg.segment(*inliers, *coefficients);
 
         return inliers->indices.size();
-
-        // // Create the filtering object
-        // pcl::ExtractIndices<pcl::PointXYZ> extract;
-
-        // int i = 0, nr_points = (int)input_cloud->points.size();
-        // while (input_cloud->points.size() > 0.3 * nr_points)
-        // {
-        //     // Segment the largest planar component from the remaining cloud
-        //     seg.setInputCloud(input_cloud);
-        //     // pcl::ScopeTime scopeTime("Test loop");
-        //     // {
-        //         seg.segment(*inliers, *coefficients);
-        //     // }
-        //     if (inliers->indices.size() == 0)
-        //     {
-        //         std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
-        //         break;
-        //     }
-
-        //     // Extract the inliers
-        //     extract.setInputCloud(input_cloud);
-        //     extract.setIndices(inliers);
-        //     extract.setNegative(false);
-        //     extract.filter(*plain_cloud);
-        //     std::cerr << "PointCloud representing the planar component: " << plain_cloud->width * plain_cloud->height << " data points." << std::endl;
-
-        //     break;
-        // }
-        // // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
     }
 
     // void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
@@ -553,6 +518,35 @@ public:
         return fine_plane;
     }
 
+void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std::string &filename)
+{
+    int width = ring_len;
+    int height = ring_cnt;
+    std::vector<unsigned char> pixels(width * height);
+
+    // Normalize and convert range aperture values to unsigned char
+    float max_range = *std::max_element(range_aperture.begin(), range_aperture.end());
+    if(max_range >= 60.0f) max_range = 60.0f;
+
+    for (int i = 0; i < height; ++i)
+    {
+        for (int j = 0; j < width; ++j)
+        {
+            float value = range_aperture[j + i * ring_len];
+            if (value < 0)                      // GROUND pulse
+                pixels[j + i * width] = 25;
+            else if (value == 0)                // EMPTY pulse
+                pixels[j + i * width] = 0;
+            else
+                pixels[j + i * width] = 100 * static_cast<unsigned char>(value / max_range * 155.0f);
+        }
+    }
+
+    // Save as PNG
+    stbi_write_png(filename.c_str(), width, height, 1, pixels.data(), width * sizeof(unsigned char));
+}
+
+
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
@@ -581,11 +575,11 @@ public:
 
         const float rough_ground_radius = 10.0f; // estimate ground in this radius
         const float fine_ground_radius = 15.0f;  // estimate ground in this radius
-        const float th_ground_radius = 25.0f;   // estimate ground in this radius
+        const float th_ground_radius = 25.0f;    // estimate ground in this radius
 
         const float rough_minradius = 7.0f; // buggy body size
-        const float fine_minradius = 5.0f; // buggy body size
-        const float th_minradius = 3.0f; // buggy body size
+        const float fine_minradius = 5.0f;  // buggy body size
+        const float th_minradius = 3.0f;    // buggy body size
 
         const float rough_min_underground = 3.0f;
         const float fine_min_underground = 0.5f;
@@ -647,11 +641,55 @@ public:
         printGrids(half_level, quarter_level, th_level);
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
-        applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane, th_level_med);
+        std::vector<float> range_aperture;
+        applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane, th_level_med, range_aperture);
+
+        std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000+frame_count) + ".png";
+        printf("%s ", filename.c_str());
+        saveRangeApertureAsPNG(range_aperture, filename);
+
+        frame_count++;
+        printf(" frame_count = %d\n", frame_count);
+
     }
 
-    void
-    pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
+
+
+    void clusterPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &object_cloud)
+    {
+        // Create the EuclideanClusterExtraction object
+        pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+        ec.setClusterTolerance(0.50); // Set the cluster tolerance (max distance between points to be considered in the same cluster)
+        ec.setMinClusterSize(15);     // Set the minimum cluster size
+        ec.setMaxClusterSize(25000);  // Set the maximum cluster size
+
+        // Set input cloud
+        ec.setInputCloud(input_cloud);
+
+        // Extract clusters
+        std::vector<pcl::PointIndices> cluster_indices;
+        ec.extract(cluster_indices);
+
+        // Output the clusters
+        for (const auto &indices : cluster_indices)
+        {
+            pcl::PointCloud<pcl::PointXYZ>::Ptr cluster(new pcl::PointCloud<pcl::PointXYZ>);
+            for (const auto &index : indices.indices)
+            {
+                cluster->points.push_back(input_cloud->points[index]);
+            }
+            cluster->width = cluster->points.size();
+            cluster->height = 1;
+            cluster->is_dense = true;
+
+            *object_cloud += *cluster;
+
+            // Process or visualize the cluster as needed
+        }
+    }
+
+    void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
     {
         // Convert ROS point cloud to PCL point cloud
         pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -659,36 +697,35 @@ public:
 
         // Create separate point cloud containers for objects and non-objects
         pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr ground_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
         // Separate plain points from other cloud
-        findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
-        // ransacPlaneModelFilter(pcl_cloud, noise_cloud, work_cloud);
-
-        frame_count++;
-        printf("frame_count = %d\n", frame_count);
+        findPlainPoints(pcl_cloud, ground_cloud, work_cloud);
 
         // Create separate point cloud containers for plain and other points
-        pcl::PointCloud<pcl::PointXYZ>::Ptr plain_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::PointCloud<pcl::PointXYZ>::Ptr other_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
         // Use the segmentation and extraction method
-        // segmentPointCloud(work_cloud, plain_cloud, other_cloud);
+        // clusterPointCloud(work_cloud, noise_cloud);
 
         // Publish the separated point clouds as ROS messages
         sensor_msgs::PointCloud2 object_ros_cloud;
         sensor_msgs::PointCloud2 noise_ros_cloud;
+        sensor_msgs::PointCloud2 ground_ros_cloud;
 
         pcl::toROSMsg(*work_cloud, object_ros_cloud);
         pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
+        pcl::toROSMsg(*ground_cloud, ground_ros_cloud);
 
         // Set the header information for ROS messages
         object_ros_cloud.header = input_cloud->header;
         noise_ros_cloud.header = input_cloud->header;
+        ground_ros_cloud.header = input_cloud->header;
 
         // Publish the separated point clouds
         _object_cloud_pub.publish(object_ros_cloud);
         _noise_cloud_pub.publish(noise_ros_cloud);
+        _ground_cloud_pub.publish(ground_ros_cloud);
     }
 
 private:
@@ -696,9 +733,10 @@ private:
     ros::Subscriber _input_cloud_sub;
     ros::Publisher _noise_cloud_pub;
     ros::Publisher _object_cloud_pub;
+    ros::Publisher _ground_cloud_pub;
     int frame_count = 0;
-    std::string _input_topic = "/mbuggy/os1/points";
-    const int ring_cnt = 64; // 64 for os1, 128 for os2 and os3
+    std::string _input_topic = "/mbuggy/os2/points";
+    const int ring_cnt = 128; // 64 for os1, 128 for os2 and os3
     const int ring_len = 512;
     const int v_num = 32; // in fact for mapping will be used lower half
     const int h_num = 16;
