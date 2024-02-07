@@ -10,17 +10,26 @@
 #include <pcl_ros/segmentation/sac_segmentation.h>
 #include <pcl_ros/filters/extract_indices.h>
 #include <pcl_ros/filters/statistical_outlier_removal.h>
+// #include <pcl_ros/common/time.h>
 
 #include <vector>
 
 struct GroundPlane
 {
     float a, b, c; // z = a*x + b*y + c
+    GroundPlane()
+    {
+        a = b = c = 0;
+    }
 };
 
 class Momentums
 {
 public:
+    int cnt;
+    float x, y, z;    // first order
+    float xx, yy, zz; // second order
+    float xy, xz, yz; // mixed
     Momentums()
     {
         cnt = 0;
@@ -69,11 +78,6 @@ public:
         yz += a.yz;
         return *this;
     }
-
-    int cnt;
-    float x, y, z;    // first order
-    float xx, yy, zz; // second order
-    float xy, xz, yz; // mixed
 };
 
 class PointCloudFilterNode
@@ -85,7 +89,7 @@ public:
         _nh = ros::NodeHandle("~"); // Private node handle for parameters
 
         // Subscribe to the input point cloud topic
-        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os1/points", 1,
+        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os3/points", 1,
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
 
         // Create publishers for separated point clouds
@@ -182,11 +186,14 @@ public:
                               const float msq_mult_correction,
                               const float min_abs_correction,
                               const int min_points,
-                              const float max_ground_radius)
+                              const float max_ground_radius = 30.f,
+                              const float min_ground_radius = 3.0f,
+                              const float max_underground_z = 4.0f)
     {
         Momentums momentums[h_num * v_num]; // zero initialized
         Momentums stats;
         float max_ground_radius_sq = max_ground_radius * max_ground_radius;
+        float min_ground_radius_sq = min_ground_radius * min_ground_radius;
 
         for (int y = 0; y < v_num; y++)
         {
@@ -226,7 +233,11 @@ public:
                         if (z > z0 + underlying_th[grid_idx] && underlying_th[grid_idx] != UNKNOWN_GROUND)
                             continue;
 
-                        if ( x * x + y * y > max_ground_radius_sq)
+                        if (z < z0 - max_underground_z)
+                            continue;
+
+                        const float sq_radius = x * x + y * y;
+                        if (sq_radius > max_ground_radius_sq || sq_radius < min_ground_radius_sq)
                             continue;
 
                         // printf("(%.1f; %.1f; %.1f) ", x, y, z);
@@ -480,8 +491,6 @@ public:
         copy_grid(grid_med_2, low_level_med);
     }
 
-
-
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
@@ -500,15 +509,23 @@ public:
         const int min_points_avg = 16;
         const int min_points_high = 8; // about 15%
 
-        const float lowpart_sigma_shift = 0;       // keeping 50% of samples under threshold
+        const float lowpart_sigma_shift = -0.7;    // keeping ~25% of samples under threshold
         const float distillate_sigma_shift = +0.7; // keeping 75% of remaining samples (37% of total samples)
-        const float normal_th_sigma_shift = +4.5;  // more than 3 sigma above average ground level
+        const float normal_th_sigma_shift = +2.5;  // more than 3 sigma above average ground level
 
         const float no_correction = 0.0;   // 0 centimeters
-        const float min_correction = 0.05; // add 5 centimeters
-        const float big_correction = 0.20; // add 20 centimeters over ground level
+        const float min_correction = 0.05; // add 5 centimeters (about lidar linear accuracy)
+        const float big_correction = 0.25; // add more over ground level
 
-        const float max_ground_radius = 30.0f; // 30 meters
+        const float rough_ground_radius = 15.0f; // estimate ground in this radius
+        const float fine_ground_radius = 20.0f;  // estimate ground in this radius
+        const float max_ground_radius = 25.0f;   // estimate ground in this radius
+
+        const float min_ground_radius = 3.0f; // buggy body size
+
+        const float rough_min_underground = 3.0f;
+        const float fine_min_underground = 0.5f;
+        const float th_min_underground = 0.3f;
 
         GroundPlane horizontal_plane; // inited by zero coefficients
         float unknown_levels[h_num * v_num];
@@ -522,7 +539,9 @@ public:
                                                 lowpart_sigma_shift,
                                                 no_correction,
                                                 min_points_low,
-                                                max_ground_radius);
+                                                rough_ground_radius,
+                                                min_ground_radius,
+                                                rough_min_underground);
 
         // printGrids(low_level, low_level, low_level);
 
@@ -536,7 +555,9 @@ public:
                                                distillate_sigma_shift,
                                                +min_correction,
                                                min_points_avg,
-                                               max_ground_radius);
+                                               fine_ground_radius,
+                                               min_ground_radius,
+                                               fine_min_underground);
 
         grid_median_recovery(quarter_level, quarter_level_med);
 
@@ -549,7 +570,9 @@ public:
                                                   normal_th_sigma_shift,
                                                   +big_correction,
                                                   min_points_high,
-                                                  max_ground_radius);
+                                                  max_ground_radius,
+                                                  min_ground_radius,
+                                                  th_min_underground);
 
         grid_median_recovery(th_level, th_level_med);
 
@@ -560,63 +583,118 @@ public:
         printGrids(half_level, quarter_level, th_level);
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
-        applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane,  th_level_med);
+        applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane, th_level_med);
     }
 
-    void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
+
+    void ransacPlainPoints(pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
     {
-        // Convert ROS point cloud to PCL point cloud
-        pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::fromROSMsg(*input_cloud, *pcl_cloud);
+        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
 
-        // Create separate point cloud containers for objects and non-objects
-        pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        // Create the segmentation object
+        pcl::SACSegmentation<pcl::PointXYZ> seg;
 
-        // Separate plain points from other cloud
-        findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+        seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
+        seg.setMethodType(pcl::SAC_RANSAC);
 
-        frame_count++;
-        printf("frame_count = %d\n", frame_count);
+        float threshold = 0.25;
+        float max_iteration = 1000;
+        // float probability = 0.99;
 
-        // Create separate point cloud containers for plain and other points
-        pcl::PointCloud<pcl::PointXYZ>::Ptr plain_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        pcl::PointCloud<pcl::PointXYZ>::Ptr other_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        seg.setDistanceThreshold(threshold); // Distance need to be adjusted according to the obj
+        seg.setMaxIterations(max_iteration);
+        // seg.setProbability(probability);
 
-        // Use the segmentation and extraction method
-        // segmentPointCloud(work_cloud, plain_cloud, other_cloud);
+    // Create the filtering object
+    pcl::ExtractIndices<pcl::PointXYZ> extract;
 
-        // Publish the separated point clouds as ROS messages
-        sensor_msgs::PointCloud2 object_ros_cloud;
-        sensor_msgs::PointCloud2 noise_ros_cloud;
+    int i = 0, nr_points = (int)input_cloud->points.size();
+    while (input_cloud->points.size() > 0.3 * nr_points)
+    {
+        // Segment the largest planar component from the remaining cloud
+        seg.setInputCloud(input_cloud);
+        // pcl::ScopeTime scopeTime("Test loop");
+        // {
+            seg.segment(*inliers, *coefficients);
+        // }
+        if (inliers->indices.size() == 0)
+        {
+            std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
+            break;
+        }
 
-        pcl::toROSMsg(*work_cloud, object_ros_cloud);
-        pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
+        // Extract the inliers
+        extract.setInputCloud(input_cloud);
+        extract.setIndices(inliers);
+        extract.setNegative(false);
+        extract.filter(*plain_cloud);
+        std::cerr << "PointCloud representing the planar component: " << plain_cloud->width * plain_cloud->height << " data points." << std::endl;
 
-        // Set the header information for ROS messages
-        object_ros_cloud.header = input_cloud->header;
-        noise_ros_cloud.header = input_cloud->header;
-
-        // Publish the separated point clouds
-        _object_cloud_pub.publish(object_ros_cloud);
-        _noise_cloud_pub.publish(noise_ros_cloud);
+        break;
     }
+    // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
+}
+
+void
+pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
+{
+    // Convert ROS point cloud to PCL point cloud
+    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::fromROSMsg(*input_cloud, *pcl_cloud);
+
+    // Create separate point cloud containers for objects and non-objects
+    pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+    // Separate plain points from other cloud
+    // findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+    ransacPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+
+    frame_count++;
+    printf("frame_count = %d\n", frame_count);
+
+    // Create separate point cloud containers for plain and other points
+    pcl::PointCloud<pcl::PointXYZ>::Ptr plain_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr other_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+    // Use the segmentation and extraction method
+    // segmentPointCloud(work_cloud, plain_cloud, other_cloud);
+
+    // Publish the separated point clouds as ROS messages
+    sensor_msgs::PointCloud2 object_ros_cloud;
+    sensor_msgs::PointCloud2 noise_ros_cloud;
+
+    pcl::toROSMsg(*work_cloud, object_ros_cloud);
+    pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
+
+    // Set the header information for ROS messages
+    object_ros_cloud.header = input_cloud->header;
+    noise_ros_cloud.header = input_cloud->header;
+
+    // Publish the separated point clouds
+    _object_cloud_pub.publish(object_ros_cloud);
+    _noise_cloud_pub.publish(noise_ros_cloud);
+}
 
 private:
-    ros::NodeHandle _nh;
-    ros::Subscriber _input_cloud_sub;
-    ros::Publisher _noise_cloud_pub;
-    ros::Publisher _object_cloud_pub;
-    int frame_count = 0;
-    const int ring_len = 512;
-    const int ring_cnt = 64;
-    const int v_num = 32; // in fact for mapping will be used lower half
-    const int h_num = 16;
-    const int v_block = ring_cnt / v_num; // = 4
-    const int h_block = ring_len / h_num; // = 32
-    const float UNKNOWN_GROUND = FLT_MIN;
-    const float EMPTY_GRID = FLT_MAX;
-};
+ros::NodeHandle _nh;
+ros::Subscriber _input_cloud_sub;
+ros::Publisher _noise_cloud_pub;
+ros::Publisher _object_cloud_pub;
+int frame_count = 0;
+const int ring_len = 512;
+const int ring_cnt = 128;
+const int v_num = 32; // in fact for mapping will be used lower half
+const int h_num = 16;
+const int v_block = ring_cnt / v_num; // = 4
+const int h_block = ring_len / h_num; // = 32
+const float UNKNOWN_GROUND = FLT_MIN;
+const float EMPTY_GRID = FLT_MAX;
+}
+;
 
 int main(int argc, char **argv)
 {
