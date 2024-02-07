@@ -27,15 +27,17 @@ class Momentums
 {
 public:
     int cnt;
-    float x, y, z;    // first order
-    float xx, yy, zz; // second order
-    float xy, xz, yz; // mixed
+    float x, y, z; // first order
+    float zz;      // second order
+    // float xx, yy, zz; // second order
+    // float xy, xz, yz; // mixed
     Momentums()
     {
         cnt = 0;
         x = y = z = 0;
-        xx = yy = zz = 0;
-        xy = xz = yz = 0;
+        zz = 0;
+        // xx = yy = zz = 0;
+        // xy = xz = yz = 0;
     }
     void accumulate(float x, float y, float z)
     {
@@ -43,12 +45,12 @@ public:
         this->x += x;
         this->y += y;
         this->z += z;
-        this->xx += x * x;
-        this->yy += y * y;
         this->zz += z * z;
-        this->xy += x * y;
-        this->xz += x * z;
-        this->yz += y * z;
+        // this->xx += x * x;
+        // this->yy += y * y;
+        // this->xy += x * y;
+        // this->xz += x * z;
+        // this->yz += y * z;
     }
     void finalize()
     {
@@ -57,12 +59,12 @@ public:
         x /= cnt;
         y /= cnt;
         z /= cnt;
-        xx = xx / cnt - x * x;
-        yy = yy / cnt - y * y;
         zz = zz / cnt - z * z;
-        xy = xy / cnt - x * y;
-        xz = xz / cnt - x * z;
-        yz = yz / cnt - y * z;
+        // xx = xx / cnt - x * x;
+        // yy = yy / cnt - y * y;
+        // xy = xy / cnt - x * y;
+        // xz = xz / cnt - x * z;
+        // yz = yz / cnt - y * z;
     }
     Momentums &operator+=(const Momentums &a)
     {
@@ -70,12 +72,12 @@ public:
         x += a.x;
         y += a.y;
         z += a.z;
-        xx += a.xx;
-        yy += a.yy;
         zz += a.zz;
-        xy += a.xy;
-        xz += a.xz;
-        yz += a.yz;
+        // xx += a.xx;
+        // yy += a.yy;
+        // xy += a.xy;
+        // xz += a.xz;
+        // yz += a.yz;
         return *this;
     }
 };
@@ -89,7 +91,7 @@ public:
         _nh = ros::NodeHandle("~"); // Private node handle for parameters
 
         // Subscribe to the input point cloud topic
-        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os3/points", 1,
+        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>("/mbuggy/os1/points", 1,
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
 
         // Create publishers for separated point clouds
@@ -330,10 +332,8 @@ public:
         copy_grid(grid_med_2, low_level_med);
     }
 
-
-    pcl::ModelCoefficients::Ptr ransacPlaneModel(pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud)
+    int ransacPlaneModel(pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud, pcl::ModelCoefficients::Ptr &coefficients)
     {
-        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
         pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
 
         // Create the segmentation object
@@ -353,38 +353,37 @@ public:
         seg.setInputCloud(input_cloud);
         seg.segment(*inliers, *coefficients);
 
-        return coefficients;
+        return inliers->indices.size();
 
-    // // Create the filtering object
-    // pcl::ExtractIndices<pcl::PointXYZ> extract;
+        // // Create the filtering object
+        // pcl::ExtractIndices<pcl::PointXYZ> extract;
 
-    // int i = 0, nr_points = (int)input_cloud->points.size();
-    // while (input_cloud->points.size() > 0.3 * nr_points)
-    // {
-    //     // Segment the largest planar component from the remaining cloud
-    //     seg.setInputCloud(input_cloud);
-    //     // pcl::ScopeTime scopeTime("Test loop");
-    //     // {
-    //         seg.segment(*inliers, *coefficients);
-    //     // }
-    //     if (inliers->indices.size() == 0)
-    //     {
-    //         std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
-    //         break;
-    //     }
+        // int i = 0, nr_points = (int)input_cloud->points.size();
+        // while (input_cloud->points.size() > 0.3 * nr_points)
+        // {
+        //     // Segment the largest planar component from the remaining cloud
+        //     seg.setInputCloud(input_cloud);
+        //     // pcl::ScopeTime scopeTime("Test loop");
+        //     // {
+        //         seg.segment(*inliers, *coefficients);
+        //     // }
+        //     if (inliers->indices.size() == 0)
+        //     {
+        //         std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
+        //         break;
+        //     }
 
-    //     // Extract the inliers
-    //     extract.setInputCloud(input_cloud);
-    //     extract.setIndices(inliers);
-    //     extract.setNegative(false);
-    //     extract.filter(*plain_cloud);
-    //     std::cerr << "PointCloud representing the planar component: " << plain_cloud->width * plain_cloud->height << " data points." << std::endl;
+        //     // Extract the inliers
+        //     extract.setInputCloud(input_cloud);
+        //     extract.setIndices(inliers);
+        //     extract.setNegative(false);
+        //     extract.filter(*plain_cloud);
+        //     std::cerr << "PointCloud representing the planar component: " << plain_cloud->width * plain_cloud->height << " data points." << std::endl;
 
-    //     break;
-    // }
-    // // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
-}
-
+        //     break;
+        // }
+        // // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
+    }
 
     void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                            pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
@@ -397,11 +396,11 @@ public:
 
         pcl::SACSegmentation<pcl::PointXYZ> seg;  // Create the segmentation object
         seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
-        seg.setEpsAngle((10. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
+        seg.setEpsAngle((12. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
         seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
         seg.setMethodType(pcl::SAC_RANSAC);
         seg.setModelType(pcl::SACMODEL_PLANE);
-        seg.setDistanceThreshold(0.05f);
+        seg.setDistanceThreshold(0.25f);
         seg.setInputCloud(input_cloud);
         seg.segment(*inliers, *plane);
 
@@ -424,7 +423,8 @@ public:
                               const int min_points,
                               const float max_ground_radius = 30.f,
                               const float min_ground_radius = 3.0f,
-                              const float max_underground_z = 4.0f)
+                              const float max_underground_z = 4.0f,
+                              const int min_cells = 4)
     {
         pcl::PointCloud<pcl::PointXYZ>::Ptr ransac_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         Momentums momentums[h_num * v_num]; // zero initialized
@@ -497,29 +497,28 @@ public:
         }
 
         // stats.finalize();
-        pcl::ModelCoefficients::Ptr ransac_plane = ransacPlaneModel(ransac_cloud);
-        // Use the obtained plane coefficients
-        const float ransac_A = ransac_plane->values[0];
-        const float ransac_B = ransac_plane->values[1];
-        const float ransac_C = ransac_plane->values[2];
-        const float ransac_D = ransac_plane->values[3];
+        pcl::ModelCoefficients::Ptr ransac_plane(new pcl::ModelCoefficients());
 
+        int inliers_count = ransacPlaneModel(ransac_cloud, ransac_plane);
+
+        GroundPlane fine_plane = plane; // by default do not correct plane
+
+        if (inliers_count > min_points * min_cells)
+        {
+            // Use the obtained plane coefficients
+            const float ransac_A = ransac_plane->values[0];
+            const float ransac_B = ransac_plane->values[1];
+            const float ransac_C = ransac_plane->values[2];
+            const float ransac_D = ransac_plane->values[3];
+            const float denominator = ransac_C;
+            if (denominator > 0.00001f || denominator < -0.00001f)
+            {
+                fine_plane.a = -ransac_A / denominator;
+                fine_plane.b = -ransac_B / denominator;
+                fine_plane.c = -ransac_D / denominator;
+            }
+        }
         // convert A*x + B*y + C*z + D = 0 to z = a*x + b*y + c
-        GroundPlane fine_plane;
-        const float denominator = ransac_C;
-        if (denominator > 0.00001f || denominator < -0.00001f)
-        {
-            fine_plane.a = -ransac_A / denominator;
-            fine_plane.b = -ransac_B / denominator;
-            fine_plane.c = -ransac_D / denominator;
-        }
-        else
-        {
-             fine_plane.a = 0;
-             fine_plane.b = 0;
-             fine_plane.c = 0;
-        }
-        
 
         for (int y = 0; y < v_num; y++)
         {
@@ -552,7 +551,6 @@ public:
         return fine_plane;
     }
 
-
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
@@ -576,12 +574,12 @@ public:
         const float normal_th_sigma_shift = +2.5;  // more than 3 sigma above average ground level
 
         const float no_correction = 0.0;   // 0 centimeters
-        const float min_correction = 0.05; // add 5 centimeters (about lidar linear accuracy)
+        const float min_correction = 0.10; // add 5 centimeters (about lidar linear accuracy)
         const float big_correction = 0.25; // add more over ground level
 
-        const float rough_ground_radius = 15.0f; // estimate ground in this radius
+        const float rough_ground_radius = 20.0f; // estimate ground in this radius
         const float fine_ground_radius = 20.0f;  // estimate ground in this radius
-        const float max_ground_radius = 25.0f;   // estimate ground in this radius
+        const float max_ground_radius = 20.0f;   // estimate ground in this radius
 
         const float min_ground_radius = 3.0f; // buggy body size
 
@@ -648,65 +646,62 @@ public:
         applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane, th_level_med);
     }
 
+    void
+    pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
+    {
+        // Convert ROS point cloud to PCL point cloud
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::fromROSMsg(*input_cloud, *pcl_cloud);
 
+        // Create separate point cloud containers for objects and non-objects
+        pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
-void
-pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
-{
-    // Convert ROS point cloud to PCL point cloud
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::fromROSMsg(*input_cloud, *pcl_cloud);
+        // Separate plain points from other cloud
+        findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+        // ransacPlaneModelFilter(pcl_cloud, noise_cloud, work_cloud);
 
-    // Create separate point cloud containers for objects and non-objects
-    pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        frame_count++;
+        printf("frame_count = %d\n", frame_count);
 
-    // Separate plain points from other cloud
-    findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
-    // ransacPlaneModelFilter(pcl_cloud, noise_cloud, work_cloud);
+        // Create separate point cloud containers for plain and other points
+        pcl::PointCloud<pcl::PointXYZ>::Ptr plain_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl::PointCloud<pcl::PointXYZ>::Ptr other_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
-    frame_count++;
-    printf("frame_count = %d\n", frame_count);
+        // Use the segmentation and extraction method
+        // segmentPointCloud(work_cloud, plain_cloud, other_cloud);
 
-    // Create separate point cloud containers for plain and other points
-    pcl::PointCloud<pcl::PointXYZ>::Ptr plain_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::PointCloud<pcl::PointXYZ>::Ptr other_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        // Publish the separated point clouds as ROS messages
+        sensor_msgs::PointCloud2 object_ros_cloud;
+        sensor_msgs::PointCloud2 noise_ros_cloud;
 
-    // Use the segmentation and extraction method
-    // segmentPointCloud(work_cloud, plain_cloud, other_cloud);
+        pcl::toROSMsg(*work_cloud, object_ros_cloud);
+        pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
 
-    // Publish the separated point clouds as ROS messages
-    sensor_msgs::PointCloud2 object_ros_cloud;
-    sensor_msgs::PointCloud2 noise_ros_cloud;
+        // Set the header information for ROS messages
+        object_ros_cloud.header = input_cloud->header;
+        noise_ros_cloud.header = input_cloud->header;
 
-    pcl::toROSMsg(*work_cloud, object_ros_cloud);
-    pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
-
-    // Set the header information for ROS messages
-    object_ros_cloud.header = input_cloud->header;
-    noise_ros_cloud.header = input_cloud->header;
-
-    // Publish the separated point clouds
-    _object_cloud_pub.publish(object_ros_cloud);
-    _noise_cloud_pub.publish(noise_ros_cloud);
-}
+        // Publish the separated point clouds
+        _object_cloud_pub.publish(object_ros_cloud);
+        _noise_cloud_pub.publish(noise_ros_cloud);
+    }
 
 private:
-ros::NodeHandle _nh;
-ros::Subscriber _input_cloud_sub;
-ros::Publisher _noise_cloud_pub;
-ros::Publisher _object_cloud_pub;
-int frame_count = 0;
-const int ring_len = 512;
-const int ring_cnt = 128;
-const int v_num = 32; // in fact for mapping will be used lower half
-const int h_num = 16;
-const int v_block = ring_cnt / v_num; // = 4
-const int h_block = ring_len / h_num; // = 32
-const float UNKNOWN_GROUND = FLT_MIN;
-const float EMPTY_GRID = FLT_MAX;
-}
-;
+    ros::NodeHandle _nh;
+    ros::Subscriber _input_cloud_sub;
+    ros::Publisher _noise_cloud_pub;
+    ros::Publisher _object_cloud_pub;
+    int frame_count = 0;
+    const int ring_len = 512;
+    const int ring_cnt = 64; // 64 for os1, 128 for os2 and os3
+    const int v_num = 32; // in fact for mapping will be used lower half
+    const int h_num = 16;
+    const int v_block = ring_cnt / v_num; // = 4
+    const int h_block = ring_len / h_num; // = 32
+    const float UNKNOWN_GROUND = FLT_MIN;
+    const float EMPTY_GRID = FLT_MAX;
+};
 
 int main(int argc, char **argv)
 {
