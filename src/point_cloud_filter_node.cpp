@@ -150,167 +150,6 @@ public:
         // pcl::copyPointCloud(outliers, *outlier_cloud);
     }
 
-    void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
-    {
-        // Segment the ground
-        pcl::ModelCoefficients::Ptr plane(new pcl::ModelCoefficients);
-        pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-        plane->values.resize(4); // Make room for a plane equation (ax+by+cz+d=0)
-
-        pcl::SACSegmentation<pcl::PointXYZ> seg;  // Create the segmentation object
-        seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
-        seg.setEpsAngle((10. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
-        seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
-        seg.setMethodType(pcl::SAC_RANSAC);
-        seg.setModelType(pcl::SACMODEL_PLANE);
-        seg.setDistanceThreshold(0.05f);
-        seg.setInputCloud(input_cloud);
-        seg.segment(*inliers, *plane);
-
-        // Extract inliers
-        pcl::ExtractIndices<pcl::PointXYZ> extract;
-        extract.setInputCloud(input_cloud);
-        extract.setIndices(inliers);
-        extract.setNegative(false);   // Extract the inliers
-        extract.filter(*plain_cloud); // plain_cloud contains the plane
-        extract.setNegative(true);    // Extract the outliers
-        extract.filter(*other_cloud); // other_cloud contains the non-plane points
-    }
-
-    GroundPlane calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                              float result_grid[],
-                              const GroundPlane &plane,
-                              const float underlying_th[],
-                              const float msq_mult_correction,
-                              const float min_abs_correction,
-                              const int min_points,
-                              const float max_ground_radius = 30.f,
-                              const float min_ground_radius = 3.0f,
-                              const float max_underground_z = 4.0f)
-    {
-        Momentums momentums[h_num * v_num]; // zero initialized
-        Momentums stats;
-        float max_ground_radius_sq = max_ground_radius * max_ground_radius;
-        float min_ground_radius_sq = min_ground_radius * min_ground_radius;
-
-        for (int y = 0; y < v_num; y++)
-        {
-            for (int x = 0; x < h_num; x++)
-            {
-                const int x1 = h_block * x;
-                const int x2 = h_block * (x + 1);
-                const int y1 = v_block * y;
-                const int y2 = v_block * (y + 1);
-                int grid_idx = x + y * h_num;
-
-                float result;
-
-                float avg_z1 = 0;
-                float avg_z2 = 0;
-                int count = 0;
-                int non_zero_count = 0;
-
-                if (underlying_th[grid_idx] == EMPTY_GRID)
-                    result_grid[grid_idx] = EMPTY_GRID;
-
-                for (int i = x1; i < x2; i++)
-                {
-                    for (int j = y1; j < y2; j++)
-                    {
-                        int pulse_idx = i + j * ring_len;
-                        float x = input_cloud->points[pulse_idx].x;
-                        float y = input_cloud->points[pulse_idx].y;
-                        float z = input_cloud->points[pulse_idx].z;
-                        if (z == 0 && x == 0 && y == 0)
-                            continue;
-
-                        non_zero_count++;
-
-                        float z0 = plane.a * x + plane.b * y + plane.c;
-
-                        if (z > z0 + underlying_th[grid_idx] && underlying_th[grid_idx] != UNKNOWN_GROUND)
-                            continue;
-
-                        if (z < z0 - max_underground_z)
-                            continue;
-
-                        const float sq_radius = x * x + y * y;
-                        if (sq_radius > max_ground_radius_sq || sq_radius < min_ground_radius_sq)
-                            continue;
-
-                        // printf("(%.1f; %.1f; %.1f) ", x, y, z);
-                        momentums[grid_idx].accumulate(x, y, z);
-
-                        // avg_z1 += z;
-                        // avg_z2 += z * z;
-                        // count++;
-                    }
-                }
-
-                if (momentums[grid_idx].cnt < min_points)
-                {
-                    if (non_zero_count != 0)
-                        result_grid[grid_idx] = UNKNOWN_GROUND;
-                    else
-                        result_grid[grid_idx] = EMPTY_GRID;
-                }
-                else
-                {
-                    result_grid[grid_idx] = 0; // filler - should be calculated later
-                    stats += momentums[grid_idx];
-                }
-            }
-        }
-
-        stats.finalize();
-        GroundPlane fine_plane;
-        float denominator = (stats.xx * stats.yy - stats.xy * stats.xy);
-        if (denominator > 0.00001f || denominator < -0.00001f)
-        {
-            fine_plane.a = (stats.xz * stats.yy - stats.yz * stats.xy) / denominator;
-            fine_plane.b = (stats.yz * stats.xx - stats.xz * stats.xy) / denominator;
-            fine_plane.c = stats.z - (fine_plane.a * stats.x + fine_plane.b * stats.y);
-        }
-        else
-        {
-            fine_plane.a = 0;
-            fine_plane.b = 0;
-            fine_plane.c = 0;
-        }
-
-        for (int y = 0; y < v_num; y++)
-        {
-            for (int x = 0; x < h_num; x++)
-            {
-                int grid_idx = x + y * h_num;
-                if (result_grid[grid_idx] != EMPTY_GRID && result_grid[grid_idx] != UNKNOWN_GROUND)
-                {
-                    Momentums over_plane = momentums[grid_idx];
-                    over_plane.z -= fine_plane.a * over_plane.x +
-                                    fine_plane.b * over_plane.y +
-                                    fine_plane.c * over_plane.cnt;
-
-                    momentums[grid_idx].finalize();
-                    over_plane.finalize();
-
-                    float msq = sqrt(momentums[grid_idx].zz); // original z MSQ
-                    float correction = msq_mult_correction * msq;
-
-                    if ((min_abs_correction > 0 && correction < min_abs_correction) || // apply at least min_correction
-                        (min_abs_correction < 0 && correction > min_abs_correction))
-                    {
-                        correction = min_abs_correction;
-                    }
-
-                    result_grid[grid_idx] = over_plane.z + correction; // aligned to plane z level
-                }
-            }
-        }
-        return fine_plane;
-    }
-
     void applyGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
@@ -491,6 +330,229 @@ public:
         copy_grid(grid_med_2, low_level_med);
     }
 
+
+    pcl::ModelCoefficients::Ptr ransacPlaneModel(pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud)
+    {
+        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+
+        // Create the segmentation object
+        pcl::SACSegmentation<pcl::PointXYZ> seg;
+
+        seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
+        seg.setMethodType(pcl::SAC_RANSAC);
+
+        float threshold = 0.25;
+        float max_iteration = 1000;
+        // float probability = 0.99;
+
+        seg.setDistanceThreshold(threshold); // Distance need to be adjusted according to the obj
+        seg.setMaxIterations(max_iteration);
+        // seg.setProbability(probability);
+
+        seg.setInputCloud(input_cloud);
+        seg.segment(*inliers, *coefficients);
+
+        return coefficients;
+
+    // // Create the filtering object
+    // pcl::ExtractIndices<pcl::PointXYZ> extract;
+
+    // int i = 0, nr_points = (int)input_cloud->points.size();
+    // while (input_cloud->points.size() > 0.3 * nr_points)
+    // {
+    //     // Segment the largest planar component from the remaining cloud
+    //     seg.setInputCloud(input_cloud);
+    //     // pcl::ScopeTime scopeTime("Test loop");
+    //     // {
+    //         seg.segment(*inliers, *coefficients);
+    //     // }
+    //     if (inliers->indices.size() == 0)
+    //     {
+    //         std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
+    //         break;
+    //     }
+
+    //     // Extract the inliers
+    //     extract.setInputCloud(input_cloud);
+    //     extract.setIndices(inliers);
+    //     extract.setNegative(false);
+    //     extract.filter(*plain_cloud);
+    //     std::cerr << "PointCloud representing the planar component: " << plain_cloud->width * plain_cloud->height << " data points." << std::endl;
+
+    //     break;
+    // }
+    // // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
+}
+
+
+    void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
+    {
+        // Segment the ground
+        pcl::ModelCoefficients::Ptr plane(new pcl::ModelCoefficients);
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+        plane->values.resize(4); // Make room for a plane equation (ax+by+cz+d=0)
+
+        pcl::SACSegmentation<pcl::PointXYZ> seg;  // Create the segmentation object
+        seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
+        seg.setEpsAngle((10. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
+        seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
+        seg.setMethodType(pcl::SAC_RANSAC);
+        seg.setModelType(pcl::SACMODEL_PLANE);
+        seg.setDistanceThreshold(0.05f);
+        seg.setInputCloud(input_cloud);
+        seg.segment(*inliers, *plane);
+
+        // Extract inliers
+        pcl::ExtractIndices<pcl::PointXYZ> extract;
+        extract.setInputCloud(input_cloud);
+        extract.setIndices(inliers);
+        extract.setNegative(false);   // Extract the inliers
+        extract.filter(*plain_cloud); // plain_cloud contains the plane
+        extract.setNegative(true);    // Extract the outliers
+        extract.filter(*other_cloud); // other_cloud contains the non-plane points
+    }
+
+    GroundPlane calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
+                              float result_grid[],
+                              const GroundPlane &plane,
+                              const float underlying_th[],
+                              const float msq_mult_correction,
+                              const float min_abs_correction,
+                              const int min_points,
+                              const float max_ground_radius = 30.f,
+                              const float min_ground_radius = 3.0f,
+                              const float max_underground_z = 4.0f)
+    {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr ransac_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        Momentums momentums[h_num * v_num]; // zero initialized
+        Momentums stats;
+
+        float max_ground_radius_sq = max_ground_radius * max_ground_radius;
+        float min_ground_radius_sq = min_ground_radius * min_ground_radius;
+
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
+                const int x1 = h_block * x;
+                const int x2 = h_block * (x + 1);
+                const int y1 = v_block * y;
+                const int y2 = v_block * (y + 1);
+                const int cell_idx = x + y * h_num;
+
+                int non_zero_count = 0;
+                pcl::PointCloud<pcl::PointXYZ>::Ptr cell_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+
+                if (underlying_th[cell_idx] == EMPTY_GRID)
+                    result_grid[cell_idx] = EMPTY_GRID;
+
+                for (int i = x1; i < x2; i++)
+                {
+                    for (int j = y1; j < y2; j++)
+                    {
+                        int pulse_idx = i + j * ring_len;
+                        float x = input_cloud->points[pulse_idx].x;
+                        float y = input_cloud->points[pulse_idx].y;
+                        float z = input_cloud->points[pulse_idx].z;
+                        if (z == 0 && x == 0 && y == 0)
+                            continue;
+
+                        non_zero_count++;
+
+                        float z0 = plane.a * x + plane.b * y + plane.c;
+
+                        if (z > z0 + underlying_th[cell_idx] && underlying_th[cell_idx] != UNKNOWN_GROUND)
+                            continue;
+
+                        if (z < z0 - max_underground_z)
+                            continue;
+
+                        const float sq_radius = x * x + y * y;
+                        if (sq_radius > max_ground_radius_sq || sq_radius < min_ground_radius_sq)
+                            continue;
+
+                        // printf("(%.1f; %.1f; %.1f) ", x, y, z);
+                        momentums[cell_idx].accumulate(x, y, z);
+                        cell_cloud->points.push_back(input_cloud->points[pulse_idx]);
+                    }
+                }
+
+                if (momentums[cell_idx].cnt < min_points)
+                {
+                    if (non_zero_count != 0)
+                        result_grid[cell_idx] = UNKNOWN_GROUND;
+                    else
+                        result_grid[cell_idx] = EMPTY_GRID;
+                }
+                else
+                {
+                    result_grid[cell_idx] = 0; // filler - should be calculated later
+                    stats += momentums[cell_idx];
+                    *ransac_cloud += *cell_cloud; // Concatenate points from cell cloud into ransac_cloud
+                }
+            }
+        }
+
+        // stats.finalize();
+        pcl::ModelCoefficients::Ptr ransac_plane = ransacPlaneModel(ransac_cloud);
+        // Use the obtained plane coefficients
+        const float ransac_A = ransac_plane->values[0];
+        const float ransac_B = ransac_plane->values[1];
+        const float ransac_C = ransac_plane->values[2];
+        const float ransac_D = ransac_plane->values[3];
+
+        // convert A*x + B*y + C*z + D = 0 to z = a*x + b*y + c
+        GroundPlane fine_plane;
+        const float denominator = ransac_C;
+        if (denominator > 0.00001f || denominator < -0.00001f)
+        {
+            fine_plane.a = -ransac_A / denominator;
+            fine_plane.b = -ransac_B / denominator;
+            fine_plane.c = -ransac_D / denominator;
+        }
+        else
+        {
+             fine_plane.a = 0;
+             fine_plane.b = 0;
+             fine_plane.c = 0;
+        }
+        
+
+        for (int y = 0; y < v_num; y++)
+        {
+            for (int x = 0; x < h_num; x++)
+            {
+                int grid_idx = x + y * h_num;
+                if (result_grid[grid_idx] != EMPTY_GRID && result_grid[grid_idx] != UNKNOWN_GROUND)
+                {
+                    Momentums over_plane = momentums[grid_idx];
+                    over_plane.z -= fine_plane.a * over_plane.x +
+                                    fine_plane.b * over_plane.y +
+                                    fine_plane.c * over_plane.cnt;
+
+                    momentums[grid_idx].finalize();
+                    over_plane.finalize();
+
+                    float msq = sqrt(momentums[grid_idx].zz); // original z MSQ
+                    float correction = msq_mult_correction * msq;
+
+                    if ((min_abs_correction > 0 && correction < min_abs_correction) || // apply at least min_correction
+                        (min_abs_correction < 0 && correction > min_abs_correction))
+                    {
+                        correction = min_abs_correction;
+                    }
+
+                    result_grid[grid_idx] = over_plane.z + correction; // aligned to plane z level
+                }
+            }
+        }
+        return fine_plane;
+    }
+
+
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
@@ -587,56 +649,6 @@ public:
     }
 
 
-    void ransacPlainPoints(pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
-    {
-        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
-        pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
-
-        // Create the segmentation object
-        pcl::SACSegmentation<pcl::PointXYZ> seg;
-
-        seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
-        seg.setMethodType(pcl::SAC_RANSAC);
-
-        float threshold = 0.25;
-        float max_iteration = 1000;
-        // float probability = 0.99;
-
-        seg.setDistanceThreshold(threshold); // Distance need to be adjusted according to the obj
-        seg.setMaxIterations(max_iteration);
-        // seg.setProbability(probability);
-
-    // Create the filtering object
-    pcl::ExtractIndices<pcl::PointXYZ> extract;
-
-    int i = 0, nr_points = (int)input_cloud->points.size();
-    while (input_cloud->points.size() > 0.3 * nr_points)
-    {
-        // Segment the largest planar component from the remaining cloud
-        seg.setInputCloud(input_cloud);
-        // pcl::ScopeTime scopeTime("Test loop");
-        // {
-            seg.segment(*inliers, *coefficients);
-        // }
-        if (inliers->indices.size() == 0)
-        {
-            std::cerr << "Could not estimate a planar model for the given dataset." << std::endl;
-            break;
-        }
-
-        // Extract the inliers
-        extract.setInputCloud(input_cloud);
-        extract.setIndices(inliers);
-        extract.setNegative(false);
-        extract.filter(*plain_cloud);
-        std::cerr << "PointCloud representing the planar component: " << plain_cloud->width * plain_cloud->height << " data points." << std::endl;
-
-        break;
-    }
-    // split_cloud(input_cloud, inliers, plain_cloud, other_cloud);
-}
 
 void
 pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
@@ -650,8 +662,8 @@ pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
     pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
     // Separate plain points from other cloud
-    // findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
-    ransacPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+    findPlainPoints(pcl_cloud, noise_cloud, work_cloud);
+    // ransacPlaneModelFilter(pcl_cloud, noise_cloud, work_cloud);
 
     frame_count++;
     printf("frame_count = %d\n", frame_count);
