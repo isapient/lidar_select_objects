@@ -682,6 +682,8 @@ public:
         printf(" frame_count = %d\n", frame_count);
     }
 
+    // Cluster the point cloud and separate the objects from the dust by penetrability
+    //
     void clusterPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                            pcl::PointCloud<pcl::PointXYZ>::Ptr &object_cloud,
                            pcl::PointCloud<pcl::PointXYZ>::Ptr &rest_cloud)
@@ -758,18 +760,20 @@ public:
                 projection->points.push_back(point);
             }
 
+            const float penetrability_threshold = 8.2; // minimal passing the trees
 
-            float dusty_metrics = 0.0;
+            float penetrability = 0.0;
+            const int neighbor_count = 9;
+
             // Build KdTree
             pcl::KdTreeFLANN<pcl::PointXYZ> kdtree_proj;
             kdtree_proj.setInputCloud(projection);
-
             // Iterate through each point in the point cloud
             for (size_t i = 0; i < projection->points.size(); ++i)
             {
-                std::vector<int> nn_indices(5); // Store indices of nearest neighbors
-                std::vector<float> nn_proj_dists(5); // Store distances to nearest neighbors in "projection"
-                std::vector<float> nn_orig_dists(5); // Store distances to nearest neighbors
+                std::vector<int> nn_indices(neighbor_count + 1);      // Store indices of nearest neighbors (excluding the point itself)
+                std::vector<float> nn_proj_dists(neighbor_count + 1); // Store distances to nearest neighbors in "projection"
+                std::vector<float> nn_orig_dists(neighbor_count + 1); // Store distances to nearest neighbors
 
                 // Perform nearest neighbor search
                 kdtree_proj.nearestKSearch(projection->points[i], 4, nn_indices, nn_proj_dists);
@@ -780,35 +784,51 @@ public:
                 for (size_t j = 0; j < nn_indices.size(); ++j)
                 {
                     int nn_index = nn_indices[j];
-                    if(nn_index == i) continue; // do not compare with itself
+                    if (nn_index == i)
+                        continue; // do not compare with itself
                     count++;
-                    
-                    pcl::PointXYZ original_point = object->points[i]; // original analyzing point
+
+                    pcl::PointXYZ original_point = object->points[i];  // original analyzing point
                     pcl::PointXYZ nn_point = object->points[nn_index]; // corresponding nearest neighbor point
 
                     // Calculate the distance between the points
                     nn_orig_dists[j] = sqrt(pow(original_point.x - nn_point.x, 2) +
-                                          pow(original_point.y - nn_point.y, 2) +
-                                          pow(original_point.z - nn_point.z, 2));
-                    
-                    point_jog+= nn_orig_dists[j] / nn_proj_dists[j];
+                                            pow(original_point.y - nn_point.y, 2) +
+                                            pow(original_point.z - nn_point.z, 2));
+
+                    point_jog += pow(nn_orig_dists[j] / nn_proj_dists[j], 2) - 1;
                 }
-                dusty_metrics += point_jog;
+                if (count > 0)
+                {
+                    point_jog /= count;
+                    if (point_jog >= 0)
+                    {
+                        penetrability += sqrt(point_jog);
+                    }
+                }
             }
+            const int size = projection->points.size();
+            if (size > 0)
+                penetrability /= size;
+            else
+                penetrability = FLT_MAX;
 
-            dusty_metrics /= projection->points.size();
+            printf("%.1f  ", penetrability);
 
-            printf("%.2f ", dusty_metrics);
+            // for (auto &point : projection->points) // DEBUG
+            // {
+            //     point.z = -5 - penetrability * 2; // DEBUG
+            // }
+            // *rest_cloud += *projection; // DEBUG
 
-            *rest_cloud += *object;
-
-
-            for (auto &point : projection->points)
+            if (penetrability < penetrability_threshold)
             {
-                point.z = point.z + dusty_metrics * 3;
+                *object_cloud += *object;
             }
-
-            *object_cloud += *projection;
+            else
+            {
+                *rest_cloud += *object;
+            }
 
             // Process or visualize the cluster as needed
         }
