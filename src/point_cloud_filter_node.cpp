@@ -143,8 +143,10 @@ public:
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
                         const GroundPlane &plane,
                         const float underlying_th[],
+                        const float min_radius,
                         std::vector<float> &range_aperture)
     {
+        const float min_radius_sq = min_radius * min_radius;
         range_aperture.resize(ring_cnt * ring_len);
 
         for (int y = 0; y < v_num; y++)
@@ -177,7 +179,7 @@ public:
 
                         float z0 = plane.a * x + plane.b * y + plane.c;
 
-                        if (z > z0 + grid_level || grid_level == UNKNOWN_GROUND)
+                        if ((z > z0 + grid_level || grid_level == UNKNOWN_GROUND) && x * x + y * y >= min_radius_sq )
                         {
                             range_aperture[pulse_idx] = sqrt(x * x + y * y + z * z);
                             other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
@@ -518,34 +520,34 @@ public:
         return fine_plane;
     }
 
-void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std::string &filename)
-{
-    int width = ring_len;
-    int height = ring_cnt;
-    std::vector<unsigned char> pixels(width * height);
-
-    // Normalize and convert range aperture values to unsigned char
-    float max_range = *std::max_element(range_aperture.begin(), range_aperture.end());
-    if(max_range >= 60.0f) max_range = 60.0f;
-
-    for (int i = 0; i < height; ++i)
+    void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std::string &filename)
     {
-        for (int j = 0; j < width; ++j)
+        int width = ring_len;
+        int height = ring_cnt;
+        std::vector<unsigned char> pixels(width * height);
+
+        // Normalize and convert range aperture values to unsigned char
+        float max_range = *std::max_element(range_aperture.begin(), range_aperture.end());
+        if (max_range >= 60.0f)
+            max_range = 60.0f;
+
+        for (int i = 0; i < height; ++i)
         {
-            float value = range_aperture[j + i * ring_len];
-            if (value < 0)                      // GROUND pulse
-                pixels[j + i * width] = 25;
-            else if (value == 0)                // EMPTY pulse
-                pixels[j + i * width] = 0;
-            else
-                pixels[j + i * width] = 100 * static_cast<unsigned char>(value / max_range * 155.0f);
+            for (int j = 0; j < width; ++j)
+            {
+                float value = range_aperture[j + i * ring_len];
+                if (value < 0) // GROUND pulse
+                    pixels[j + i * width] = 25;
+                else if (value == 0) // EMPTY pulse
+                    pixels[j + i * width] = 0;
+                else
+                    pixels[j + i * width] = 100 * static_cast<unsigned char>(value / max_range * 155.0f);
+            }
         }
+
+        // Save as PNG
+        stbi_write_png(filename.c_str(), width, height, 1, pixels.data(), width * sizeof(unsigned char));
     }
-
-    // Save as PNG
-    stbi_write_png(filename.c_str(), width, height, 1, pixels.data(), width * sizeof(unsigned char));
-}
-
 
     void findPlainPoints(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
@@ -642,42 +644,77 @@ void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std:
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
         std::vector<float> range_aperture;
-        applyGridLevel(input_cloud, plain_cloud, other_cloud, perfect_plane, th_level_med, range_aperture);
+        applyGridLevel(input_cloud, plain_cloud, other_cloud, 
+                       perfect_plane, th_level_med, 
+                       th_minradius,
+                       range_aperture);
 
-        std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000+frame_count) + ".png";
-        printf("%s ", filename.c_str());
-        saveRangeApertureAsPNG(range_aperture, filename);
+        // std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000+frame_count) + ".png";
+        // printf("%s ", filename.c_str());
+        // saveRangeApertureAsPNG(range_aperture, filename);
 
         frame_count++;
         printf(" frame_count = %d\n", frame_count);
-
     }
 
-
-
     void clusterPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &object_cloud)
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &object_cloud,
+                           pcl::PointCloud<pcl::PointXYZ>::Ptr &rest_cloud)
     {
-        // Create the EuclideanClusterExtraction object
-        pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-        ec.setClusterTolerance(0.50); // Set the cluster tolerance (max distance between points to be considered in the same cluster)
-        ec.setMinClusterSize(15);     // Set the minimum cluster size
-        ec.setMaxClusterSize(25000);  // Set the maximum cluster size
+        int min_cluster_size = 9;      // Minimum number of points in a cluster 9 is okay both for 128 and 64 rings lidars
+        float cluster_tolerance = 3.5; // Cluster tolerance: 3 meters is enough for long range buildings (and this is actually baggy size)
 
-        // Set input cloud
-        ec.setInputCloud(input_cloud);
+        // Create a k-d tree for fast nearest neighbor searches
+        pcl::search::KdTree<pcl::PointXYZ>::Ptr kd_tree(new pcl::search::KdTree<pcl::PointXYZ>);
+        kd_tree->setInputCloud(input_cloud);
 
-        // Extract clusters
         std::vector<pcl::PointIndices> cluster_indices;
-        ec.extract(cluster_indices);
+        std::vector<bool> processed(input_cloud->size(), false);
+
+        // Iterate through each point in the input cloud
+        for (std::size_t i = 0; i < input_cloud->size(); ++i)
+        {
+            if (!processed[i])
+            {
+                // Search for neighboring points within the cluster tolerance
+                std::vector<int> cluster_indices_vec;
+                std::vector<float> distances;
+                pcl::PointXYZ search_point = input_cloud->points[i];
+                kd_tree->radiusSearch(search_point, cluster_tolerance, cluster_indices_vec, distances);
+
+                // Check if the cluster size is greater than the minimum
+                if (cluster_indices_vec.size() >= min_cluster_size)
+                {
+                    pcl::PointIndices indices;
+                    for (std::size_t j = 0; j < cluster_indices_vec.size(); ++j)
+                    {
+                        if (!processed[cluster_indices_vec[j]])
+                        {
+                            indices.indices.push_back(cluster_indices_vec[j]);
+                            processed[cluster_indices_vec[j]] = true;
+                        }
+                    }
+                    cluster_indices.push_back(indices);
+                }
+            }
+        }
+
+        printf("%ld clusters found\n", cluster_indices.size());
+        int cluster_num = 0;
 
         // Output the clusters
         for (const auto &indices : cluster_indices)
         {
+            cluster_num++;
             pcl::PointCloud<pcl::PointXYZ>::Ptr cluster(new pcl::PointCloud<pcl::PointXYZ>);
             for (const auto &index : indices.indices)
             {
-                cluster->points.push_back(input_cloud->points[index]);
+                // Create a new pcl::PointXYZ object to store the modified point
+                pcl::PointXYZ modified_point = input_cloud->points[index];
+                modified_point.z += cluster_num * 3.0;
+
+                // Add the modified point to the cluster
+                cluster->points.push_back(modified_point);
             }
             cluster->width = cluster->points.size();
             cluster->height = 1;
@@ -687,6 +724,18 @@ void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std:
 
             // Process or visualize the cluster as needed
         }
+
+        // Populate the rest of the points
+        for (std::size_t i = 0; i < input_cloud->size(); ++i)
+        {
+            if (!processed[i])
+            {
+                rest_cloud->points.push_back(input_cloud->points[i]);
+            }
+        }
+        rest_cloud->width = rest_cloud->points.size();
+        rest_cloud->height = 1;
+        rest_cloud->is_dense = true;
     }
 
     void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
@@ -703,17 +752,18 @@ void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std:
         findPlainPoints(pcl_cloud, ground_cloud, work_cloud);
 
         // Create separate point cloud containers for plain and other points
+        pcl::PointCloud<pcl::PointXYZ>::Ptr object_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr noise_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
         // Use the segmentation and extraction method
-        // clusterPointCloud(work_cloud, noise_cloud);
+        clusterPointCloud(work_cloud, object_cloud, noise_cloud);
 
         // Publish the separated point clouds as ROS messages
         sensor_msgs::PointCloud2 object_ros_cloud;
         sensor_msgs::PointCloud2 noise_ros_cloud;
         sensor_msgs::PointCloud2 ground_ros_cloud;
 
-        pcl::toROSMsg(*work_cloud, object_ros_cloud);
+        pcl::toROSMsg(*object_cloud, object_ros_cloud);
         pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
         pcl::toROSMsg(*ground_cloud, ground_ros_cloud);
 
@@ -735,7 +785,7 @@ private:
     ros::Publisher _object_cloud_pub;
     ros::Publisher _ground_cloud_pub;
     int frame_count = 0;
-    std::string _input_topic = "/mbuggy/os2/points";
+    std::string _input_topic = "/mbuggy/os3/points";
     const int ring_cnt = 128; // 64 for os1, 128 for os2 and os3
     const int ring_len = 512;
     const int v_num = 32; // in fact for mapping will be used lower half
