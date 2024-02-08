@@ -18,29 +18,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-// struct EIGEN_ALIGN16 Point {
-//     PCL_ADD_POINT4D;
-//     float intensity;
-//     uint32_t t;
-//     uint32_t range;
-//     uint16_t reflectivity;
-//     uint16_t ambient;
-//     uint8_t ring;
-//     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-// };
-
-// POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
-//     (float, x, x)
-//     (float, y, y)
-//     (float, z, z)
-//     (float, intensity, intensity)
-//     (std::uint32_t, t, t)
-//     (std::uint16_t, reflectivity, reflectivity)
-//     (std::uint8_t, ring, ring)
-//     (std::uint16_t, ambient, ambient)
-//     (std::uint32_t, range, range)
-// )
-
 struct GroundPlane
 {
     float a, b, c; // z = a*x + b*y + c
@@ -93,104 +70,36 @@ public:
 class PointCloudFilterNode
 {
 public:
-    PointCloudFilterNode()
-    {
-        // Initialize ROS node handle
-        _nh = ros::NodeHandle("~"); // Private node handle for parameters
-
-        // Subscribe to the input point cloud topic
-        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>(_input_topic, 1,
-                                                                   &PointCloudFilterNode::pointCloudCallback, this);
-
-        // Create publishers for separated point clouds
-        _object_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
-        _ground_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/ground", 1);
-        _noise_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
-
-        // Set filtering parameters
-        // You can add parameters for filtering here
-
-        // Initialize other variables as needed
-    }
-
-    void prefilterOutliers(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &inlier_cloud,
-                           pcl::PointCloud<pcl::PointXYZ>::Ptr &outlier_cloud)
-    {
-        // Loop through each point in the input cloud
-        // printf("count = %ld\n", input_cloud->points.size());
-        // int x = 0;
-
-        for (const pcl::PointXYZ &point : input_cloud->points)
-        {
-            // printf("(%f; %f; %f) ", point.x, point.y, point.z);
-            // x++;
-            // if(x%32 == 0)printf("\n");
-            // if(x%512 == 0)printf("\n\n");
-
-            // Check the z-coordinate (height) of the point
-            const float dist = 0.2f;   // 1 meter
-            const float shift = -1.5f; // 1 meter
-
-            if (point.z > shift + dist || point.z < shift - dist)
-            {
-                // If the z-coordinate is higher than 1 meter, consider it an object
-                inlier_cloud->points.push_back(point);
-            }
-            else
-            {
-                // Otherwise, consider it a non-object
-                outlier_cloud->points.push_back(point);
-            }
-        }
-
-        // pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
-        // sor.setInputCloud(input_cloud);
-        // sor.setMeanK(6);            // Number of neighbors to analyze for each point
-        // sor.setStddevMulThresh(1.5); // Standard deviation threshold multiplier
-
-        // pcl::PointCloud<pcl::PointXYZ> inliers;
-        // sor.filter(inliers); // Filter inliers (objects)
-
-        // pcl::PointCloud<pcl::PointXYZ> outliers;
-        // sor.setNegative(true); // Set to filter outliers (non-objects)
-        // sor.filter(outliers);
-
-        // // Copy the results back to the provided inlier and outlier point clouds
-        // pcl::copyPointCloud(inliers, *inlier_cloud);
-        // pcl::copyPointCloud(outliers, *outlier_cloud);
-    }
-
     void applyGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
                         pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud,
                         const GroundPlane &plane,
-                        const float underlying_th[],
+                        const std::vector<float> &underlying_th,
                         const float min_radius,
                         std::vector<float> &range_aperture)
     {
         const float min_radius_sq = min_radius * min_radius;
-        range_aperture.resize(ring_cnt * ring_len);
+        range_aperture.resize(_ring_cnt * _ring_len);
 
-        for (int y = 0; y < v_num; y++)
+        for (int y = 0; y < _map_h; y++)
         {
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                const int grid_idx = x + y * h_num;
+                const int grid_idx = x + y * _map_w;
                 const float grid_level = underlying_th[grid_idx];
 
                 if (grid_level == EMPTY_GRID)
                     continue;
 
-                const int x1 = h_block * x;
-                const int x2 = h_block * (x + 1);
-                const int y1 = v_block * y;
-                const int y2 = v_block * (y + 1);
+                const int x1 = _cell_w * x;
+                const int x2 = _cell_w * (x + 1);
+                const int y1 = _cell_h * y;
+                const int y2 = _cell_h * (y + 1);
                 for (int i = x1; i < x2; i++)
                 {
                     for (int j = y1; j < y2; j++)
                     {
-                        int pulse_idx = i + j * ring_len;
+                        int pulse_idx = i + j * _ring_len;
                         float x = input_cloud->points[pulse_idx].x;
                         float y = input_cloud->points[pulse_idx].y;
                         float z = input_cloud->points[pulse_idx].z;
@@ -205,12 +114,12 @@ public:
                         if ((z > z0 + grid_level || grid_level == UNKNOWN_GROUND) && x * x + y * y >= min_radius_sq)
                         {
                             range_aperture[pulse_idx] = sqrt(x * x + y * y + z * z);
-                            other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
+                            other_cloud->points.push_back(input_cloud->points[i + j * _ring_len]);
                         }
                         else
                         {
                             range_aperture[pulse_idx] = -1; // GROUND
-                            plain_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
+                            plain_cloud->points.push_back(input_cloud->points[i + j * _ring_len]);
                         }
                     }
                 }
@@ -218,14 +127,14 @@ public:
         }
     }
 
-    void printGrids(const float level1[], const float level2[], const float level3[])
+    void printGrids(const std::vector<float> &level1, const std::vector<float> &level2, const std::vector<float> &level3)
     {
         float v;
-        for (int y = 0; y < v_num; y++)
+        for (int y = 0; y < _map_h; y++)
         {
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                v = level1[x + y * h_num];
+                v = level1[x + y * _map_w];
                 if (v == UNKNOWN_GROUND)
                     printf(" xx ");
                 else if (v == EMPTY_GRID)
@@ -234,9 +143,9 @@ public:
                     printf("%3d ", (int)(10 * v + 0.5));
             }
             printf("| ");
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                v = level2[x + y * h_num];
+                v = level2[x + y * _map_w];
                 if (v == UNKNOWN_GROUND)
                     printf(" xx ");
                 else if (v == EMPTY_GRID)
@@ -245,9 +154,9 @@ public:
                     printf("%3d ", (int)(10 * v + 0.5));
             }
             printf("| ");
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                v = level3[x + y * h_num];
+                v = level3[x + y * _map_w];
                 if (v == UNKNOWN_GROUND)
                     printf(" xx ");
                 else if (v == EMPTY_GRID)
@@ -260,15 +169,17 @@ public:
         printf("\n");
     }
 
-    void median_3x3(const float src[], float dst[], const int cnt_th, bool process_known_only)
+    void median_3x3(const std::vector<float> &src, std::vector<float> &dst, const int cnt_th, bool process_known_only)
     {
-        for (int y = 0; y < v_num; y++)
+        for (int y = 0; y < _map_h; y++)
         {
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                if (process_known_only == true && (src[x + y * h_num] == UNKNOWN_GROUND || src[x + y * h_num] == EMPTY_GRID))
+                if (process_known_only == true &&
+                    (src[x + y * _map_w] == UNKNOWN_GROUND ||
+                     src[x + y * _map_w] == EMPTY_GRID))
                 {
-                    dst[x + y * h_num] = src[x + y * h_num];
+                    dst[x + y * _map_w] = src[x + y * _map_w];
                     continue;
                 }
                 std::vector<float> aperture;
@@ -277,11 +188,11 @@ public:
                 {
                     for (int dx = -1; dx <= 1; dx++)
                     {
-                        int nx = ((x + dx) + h_num) % h_num; // cycled over lidar rings
+                        int nx = ((x + dx) + _map_w) % _map_w; // cycled over lidar rings
                         int ny = y + dy;
-                        if (ny < 0 || ny >= v_num)
+                        if (ny < 0 || ny >= _map_h)
                             continue;
-                        float val = src[nx + ny * h_num];
+                        float val = src[nx + ny * _map_w];
                         if (val == EMPTY_GRID or val == UNKNOWN_GROUND)
                             continue;
                         aperture.push_back(val);
@@ -289,10 +200,10 @@ public:
                 }
                 if (aperture.size() < cnt_th)
                 {
-                    if (src[x + y * h_num] == EMPTY_GRID)
-                        dst[x + y * h_num] = EMPTY_GRID;
+                    if (src[x + y * _map_w] == EMPTY_GRID)
+                        dst[x + y * _map_w] = EMPTY_GRID;
                     else
-                        dst[x + y * h_num] = UNKNOWN_GROUND;
+                        dst[x + y * _map_w] = UNKNOWN_GROUND;
                 }
                 else
                 {
@@ -300,20 +211,20 @@ public:
                     int size = aperture.size();
                     if (size % 2 == 1)
                     {
-                        dst[x + y * h_num] = aperture[size / 2];
+                        dst[x + y * _map_w] = aperture[size / 2];
                     }
                     else
                     {
-                        dst[x + y * h_num] = (aperture[size / 2 - 1] + aperture[size / 2]) / 2;
+                        dst[x + y * _map_w] = (aperture[size / 2 - 1] + aperture[size / 2]) / 2;
                     }
                 }
             }
         }
     }
 
-    void copy_empty_mask(const float src[], float dst[])
+    void copy_empty_mask(const std::vector<float> &src, std::vector<float> &dst)
     {
-        for (int p = 0; p < v_num * h_num; p++)
+        for (int p = 0; p < _map_h * _map_w; p++)
         {
             if (src[p] == EMPTY_GRID)
             {
@@ -322,33 +233,39 @@ public:
         }
     }
 
-    void copy_grid(const float src[], float dst[])
+    void copy_grid(const std::vector<float> &src, std::vector<float> &dst)
     {
-        for (int p = 0; p < v_num * h_num; p++)
+        for (int p = 0; p < _map_h * _map_w; p++)
         {
             dst[p] = src[p];
         }
     }
 
-    void grid_median_recovery(const float low_level[], float low_level_med[])
+    /**
+     * @brief Median recovery of the grid level
+     * input - input grid
+     * output - output grid
+     */
+    void grid_median_recovery(const std::vector<float> &input, std::vector<float> &output)
     {
         const int primary_min_median_neigbours = 3;
         const int secondary_min_median_neigbours = 3;
 
-        float grid_med_1[h_num * v_num];
-        float grid_med_2[h_num * v_num];
-        median_3x3(low_level, grid_med_1, primary_min_median_neigbours, true);
+        std::vector<float> grid_med_1(_map_w * _map_h);
+        std::vector<float> grid_med_2(_map_w * _map_h);
+
+        median_3x3(input, grid_med_1, primary_min_median_neigbours, true);
         median_3x3(grid_med_1, grid_med_2, primary_min_median_neigbours, true);
 
-        float grid_med_3[h_num * v_num];
+        std::vector<float> grid_med_3(_map_w * _map_h);
 
         for (int i = 0; i < 16; i++)
         {
             median_3x3(grid_med_2, grid_med_3, secondary_min_median_neigbours, false);
             median_3x3(grid_med_3, grid_med_2, secondary_min_median_neigbours, false);
         }
-        copy_empty_mask(low_level, grid_med_2);
-        copy_grid(grid_med_2, low_level_med);
+        copy_empty_mask(input, grid_med_2);
+        copy_grid(grid_med_2, output);
     }
 
     int ransacPlaneModel(pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud, pcl::ModelCoefficients::Ptr &coefficients)
@@ -377,39 +294,10 @@ public:
         return inliers->indices.size();
     }
 
-    // void segmentPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-    //                        pcl::PointCloud<pcl::PointXYZ>::Ptr &plain_cloud,
-    //                        pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
-    // {
-    //     // Segment the ground
-    //     pcl::ModelCoefficients::Ptr plane(new pcl::ModelCoefficients);
-    //     pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
-    //     plane->values.resize(4); // Make room for a plane equation (ax+by+cz+d=0)
-
-    //     pcl::SACSegmentation<pcl::PointXYZ> seg;  // Create the segmentation object
-    //     seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
-    //     seg.setEpsAngle((12. * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
-    //     seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
-    //     seg.setMethodType(pcl::SAC_RANSAC);
-    //     seg.setModelType(pcl::SACMODEL_PLANE);
-    //     seg.setDistanceThreshold(0.25f);
-    //     seg.setInputCloud(input_cloud);
-    //     seg.segment(*inliers, *plane);
-
-    //     // Extract inliers
-    //     pcl::ExtractIndices<pcl::PointXYZ> extract;
-    //     extract.setInputCloud(input_cloud);
-    //     extract.setIndices(inliers);
-    //     extract.setNegative(false);   // Extract the inliers
-    //     extract.filter(*plain_cloud); // plain_cloud contains the plane
-    //     extract.setNegative(true);    // Extract the outliers
-    //     extract.filter(*other_cloud); // other_cloud contains the non-plane points
-    // }
-
     GroundPlane calcGridLevel(const pcl::PointCloud<pcl::PointXYZ>::Ptr &input_cloud,
-                              float result_grid[],
+                              std::vector<float> &result_grid,
                               const GroundPlane &plane,
-                              const float underlying_th[],
+                              const std::vector<float> &underlying_th,
                               const float msq_mult_correction,
                               const float min_abs_correction,
                               const int min_points,
@@ -419,33 +307,36 @@ public:
                               const int min_cells = 4)
     {
         pcl::PointCloud<pcl::PointXYZ>::Ptr ransac_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        Momentums momentums[h_num * v_num]; // zero initialized
+        std::vector<Momentums> cell_stats(_map_w * _map_h); // zero initialized
         Momentums stats;
 
         float max_ground_radius_sq = max_ground_radius * max_ground_radius;
         float min_ground_radius_sq = min_ground_radius * min_ground_radius;
 
-        for (int y = 0; y < v_num; y++)
+        for (int y = 0; y < _map_h; y++)
         {
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                const int x1 = h_block * x;
-                const int x2 = h_block * (x + 1);
-                const int y1 = v_block * y;
-                const int y2 = v_block * (y + 1);
-                const int cell_idx = x + y * h_num;
+                const int x1 = _cell_w * x;
+                const int x2 = _cell_w * (x + 1);
+                const int y1 = _cell_h * y;
+                const int y2 = _cell_h * (y + 1);
+                const int cell_idx = x + y * _map_w;
 
                 int non_zero_count = 0;
                 pcl::PointCloud<pcl::PointXYZ>::Ptr cell_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
                 if (underlying_th[cell_idx] == EMPTY_GRID)
+                {
                     result_grid[cell_idx] = EMPTY_GRID;
+                    // continue;
+                }
 
                 for (int i = x1; i < x2; i++)
                 {
                     for (int j = y1; j < y2; j++)
                     {
-                        int pulse_idx = i + j * ring_len;
+                        int pulse_idx = i + j * _ring_len;
                         float x = input_cloud->points[pulse_idx].x;
                         float y = input_cloud->points[pulse_idx].y;
                         float z = input_cloud->points[pulse_idx].z;
@@ -467,12 +358,12 @@ public:
                             continue;
 
                         // printf("(%.1f; %.1f; %.1f) ", x, y, z);
-                        momentums[cell_idx].accumulate(x, y, z);
+                        cell_stats[cell_idx].accumulate(x, y, z);
                         cell_cloud->points.push_back(input_cloud->points[pulse_idx]);
                     }
                 }
 
-                if (momentums[cell_idx].cnt < min_points)
+                if (cell_stats[cell_idx].cnt < min_points)
                 {
                     if (non_zero_count != 0)
                         result_grid[cell_idx] = UNKNOWN_GROUND;
@@ -482,7 +373,7 @@ public:
                 else
                 {
                     result_grid[cell_idx] = 0; // filler - should be calculated later
-                    stats += momentums[cell_idx];
+                    stats += cell_stats[cell_idx];
                     *ransac_cloud += *cell_cloud; // Concatenate points from cell cloud into ransac_cloud
                 }
             }
@@ -512,22 +403,22 @@ public:
         }
         // convert A*x + B*y + C*z + D = 0 to z = a*x + b*y + c
 
-        for (int y = 0; y < v_num; y++)
+        for (int y = 0; y < _map_h; y++)
         {
-            for (int x = 0; x < h_num; x++)
+            for (int x = 0; x < _map_w; x++)
             {
-                int grid_idx = x + y * h_num;
+                int grid_idx = x + y * _map_w;
                 if (result_grid[grid_idx] != EMPTY_GRID && result_grid[grid_idx] != UNKNOWN_GROUND)
                 {
-                    Momentums over_plane = momentums[grid_idx];
+                    Momentums over_plane = cell_stats[grid_idx];
                     over_plane.z -= fine_plane.a * over_plane.x +
                                     fine_plane.b * over_plane.y +
                                     fine_plane.c * over_plane.cnt;
 
-                    momentums[grid_idx].finalize();
+                    cell_stats[grid_idx].finalize();
                     over_plane.finalize();
 
-                    float msq = sqrt(momentums[grid_idx].zz); // original z MSQ
+                    float msq = sqrt(cell_stats[grid_idx].zz); // original z MSQ
                     float correction = msq_mult_correction * msq;
 
                     if ((min_abs_correction > 0 && correction < min_abs_correction) || // apply at least min_correction
@@ -543,10 +434,13 @@ public:
         return fine_plane;
     }
 
+    /**
+     * @brief Save range aperture as PNG image (pure debug visualization)
+     */
     void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std::string &filename)
     {
-        int width = ring_len;
-        int height = ring_cnt;
+        int width = _ring_len;
+        int height = _ring_cnt;
         std::vector<unsigned char> pixels(width * height);
 
         // Normalize and convert range aperture values to unsigned char
@@ -558,7 +452,7 @@ public:
         {
             for (int j = 0; j < width; ++j)
             {
-                float value = range_aperture[j + i * ring_len];
+                float value = range_aperture[j + i * _ring_len];
                 if (value < 0) // GROUND pulse
                     pixels[j + i * width] = 25;
                 else if (value == 0) // EMPTY pulse
@@ -579,14 +473,14 @@ public:
                          pcl::PointCloud<pcl::PointXYZ>::Ptr &other_cloud)
     {
 
-        float half_level[h_num * v_num];
-        float half_level_med[h_num * v_num];
+        std::vector<float> half_level(_map_w * _map_h);
+        std::vector<float> half_level_med(_map_w * _map_h);
 
-        float quarter_level[h_num * v_num];
-        float quarter_level_med[h_num * v_num];
+        std::vector<float> quarter_level(_map_w * _map_h);
+        std::vector<float> quarter_level_med(_map_w * _map_h);
 
-        float th_level[h_num * v_num];
-        float th_level_med[h_num * v_num];
+        std::vector<float> th_level(_map_w * _map_h);
+        std::vector<float> th_level_med(_map_w * _map_h);
 
         const int min_points_low = 48; // about 36%
         const int min_points_avg = 16;
@@ -604,7 +498,7 @@ public:
         const float fine_ground_radius = 15.0f;  // estimate ground in this radius
         const float th_ground_radius = 25.0f;    // estimate ground in this radius
 
-        const float rough_minradius = 7.0f; // buggy body size
+        const float rough_minradius = 7.0f; // longer than dust body size
         const float fine_minradius = 5.0f;  // buggy body size
         const float th_minradius = 3.0f;    // buggy body size
 
@@ -613,8 +507,9 @@ public:
         const float th_min_underground = 0.3f;
 
         GroundPlane horizontal_plane; // inited by zero coefficients
-        float unknown_levels[h_num * v_num];
-        for (int i = 0; i < v_num * h_num; i++)
+
+        std::vector<float> unknown_levels(_map_w * _map_h);
+        for (int i = 0; i < _map_h * _map_w; i++)
             unknown_levels[i] = UNKNOWN_GROUND;
 
         GroundPlane dirty_plane = calcGridLevel(input_cloud,
@@ -674,9 +569,9 @@ public:
                        th_minradius,
                        range_aperture);
 
-        std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000 + frame_count) + ".png";
-        printf("%s ", filename.c_str());
-        saveRangeApertureAsPNG(range_aperture, filename);
+        // std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000 + frame_count) + ".png";
+        // printf("%s ", filename.c_str());
+        // saveRangeApertureAsPNG(range_aperture, filename);
 
         frame_count++;
         printf(" frame_count = %d\n", frame_count);
@@ -829,8 +724,6 @@ public:
             {
                 *rest_cloud += *object;
             }
-
-            // Process or visualize the cluster as needed
         }
         printf("\n");
 
@@ -847,17 +740,47 @@ public:
         rest_cloud->is_dense = true;
     }
 
+    // Constuctor for custom topic
+    PointCloudFilterNode(const std::string &input_topic) : _input_topic(input_topic)
+    {
+        // Initialize ROS node handle
+        // _nh = ros::NodeHandle("~"); // Private node handle for parameters
+
+        // Subscribe to the input point cloud topic
+        _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>(_input_topic, 1,
+                                                                   &PointCloudFilterNode::pointCloudCallback, this);
+
+        // Create publishers for separated point clouds
+        _object_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
+        _ground_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/ground", 1);
+        _noise_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
+
+        // Set filtering parameters
+        //
+    }
+
+    // Callback function for the input point cloud implementing two steps: ground filtering and object separation
     void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr &input_cloud)
     {
         // Convert ROS point cloud to PCL point cloud
         pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::fromROSMsg(*input_cloud, *pcl_cloud);
 
+        _ring_cnt = input_cloud->height; // 64 for os1, 128 for os2 and os3
+        _ring_len = input_cloud->width;
+
+        printf("ring_cnt = %d, ring_len = %d\n", _ring_cnt, _ring_len);
+
         // Create separate point cloud containers for objects and non-objects
         pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::PointCloud<pcl::PointXYZ>::Ptr ground_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
         // Separate plain points from other cloud
+        _cell_h = _ring_cnt / _map_h; // = 4
+        _cell_w = _ring_len / _map_w; // = 32
+
+        printf("v_block = %d, h_block = %d\n", _cell_h, _cell_w);
+
         findPlainPoints(pcl_cloud, ground_cloud, work_cloud);
 
         // Create separate point cloud containers for plain and other points
@@ -895,21 +818,41 @@ private:
     ros::Publisher _ground_cloud_pub;
     int frame_count = 0;
     std::string _input_topic = "/mbuggy/os3/points";
-    const int ring_cnt = 128; // 64 for os1, 128 for os2 and os3
-    const int ring_len = 512;
-    const int v_num = 32; // in fact for mapping will be used lower half
-    const int h_num = 16;
-    const int v_block = ring_cnt / v_num; // = 4
-    const int h_block = ring_len / h_num; // = 32
-    const float UNKNOWN_GROUND = FLT_MIN;
-    const float EMPTY_GRID = FLT_MAX;
+
+    // Input lidar aperture resolution
+    int _ring_cnt; // 64 for os1, 128 for os2 and os3
+    int _ring_len;
+
+    // ground level scanning blocks
+    const int _map_h = 32;
+    const int _map_w = 16;
+
+    // scanning cell size
+    int _cell_h;
+    int _cell_w;
+
+    // scanning cell constants
+    static constexpr float UNKNOWN_GROUND = FLT_MIN;
+    static constexpr float EMPTY_GRID = FLT_MAX;
 };
 
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "point_cloud_filter_node");
 
-    PointCloudFilterNode filter_node;
+    // Initialize ROS node handle
+    ros::NodeHandle nh("~"); // Private node handle for node-level parameters
+
+    // Read the input topic parameter from the ROS parameter server
+    std::string input_topic;
+    if (!nh.getParam("input_topic", input_topic))
+    {
+        ROS_WARN("Failed to read input topic name from parameter server. Using default value: %s", input_topic.c_str());
+        input_topic = "/mbuggy/os3/points"; // Default value
+    }
+
+    // Create an instance of the PointCloudFilterNode with the specified input topic
+    PointCloudFilterNode filter_node(input_topic);
 
     ros::spin();
 
