@@ -18,6 +18,29 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+// struct EIGEN_ALIGN16 Point {
+//     PCL_ADD_POINT4D;
+//     float intensity;
+//     uint32_t t;
+//     uint32_t range;
+//     uint16_t reflectivity;
+//     uint16_t ambient;
+//     uint8_t ring;
+//     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+// };
+
+// POINT_CLOUD_REGISTER_POINT_STRUCT(ouster_ros::Point,
+//     (float, x, x)
+//     (float, y, y)
+//     (float, z, z)
+//     (float, intensity, intensity)
+//     (std::uint32_t, t, t)
+//     (std::uint16_t, reflectivity, reflectivity)
+//     (std::uint8_t, ring, ring)
+//     (std::uint16_t, ambient, ambient)
+//     (std::uint32_t, range, range)
+// )
+
 struct GroundPlane
 {
     float a, b, c; // z = a*x + b*y + c
@@ -179,7 +202,7 @@ public:
 
                         float z0 = plane.a * x + plane.b * y + plane.c;
 
-                        if ((z > z0 + grid_level || grid_level == UNKNOWN_GROUND) && x * x + y * y >= min_radius_sq )
+                        if ((z > z0 + grid_level || grid_level == UNKNOWN_GROUND) && x * x + y * y >= min_radius_sq)
                         {
                             range_aperture[pulse_idx] = sqrt(x * x + y * y + z * z);
                             other_cloud->points.push_back(input_cloud->points[i + j * ring_len]);
@@ -540,8 +563,10 @@ public:
                     pixels[j + i * width] = 25;
                 else if (value == 0) // EMPTY pulse
                     pixels[j + i * width] = 0;
+                else if (value >= 25.0f) // DUST
+                    pixels[j + i * width] = 50;
                 else
-                    pixels[j + i * width] = 100 * static_cast<unsigned char>(value / max_range * 155.0f);
+                    pixels[j + i * width] = 100 * static_cast<unsigned char>(value / 25 * 155.0f);
             }
         }
 
@@ -644,14 +669,14 @@ public:
         // printGrids(half_level_med, quarter_level_med, th_level_med);
 
         std::vector<float> range_aperture;
-        applyGridLevel(input_cloud, plain_cloud, other_cloud, 
-                       perfect_plane, th_level_med, 
+        applyGridLevel(input_cloud, plain_cloud, other_cloud,
+                       perfect_plane, th_level_med,
                        th_minradius,
                        range_aperture);
 
-        // std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000+frame_count) + ".png";
-        // printf("%s ", filename.c_str());
-        // saveRangeApertureAsPNG(range_aperture, filename);
+        std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000 + frame_count) + ".png";
+        printf("%s ", filename.c_str());
+        saveRangeApertureAsPNG(range_aperture, filename);
 
         frame_count++;
         printf(" frame_count = %d\n", frame_count);
@@ -706,24 +731,88 @@ public:
         for (const auto &indices : cluster_indices)
         {
             cluster_num++;
-            pcl::PointCloud<pcl::PointXYZ>::Ptr cluster(new pcl::PointCloud<pcl::PointXYZ>);
+            pcl::PointCloud<pcl::PointXYZ>::Ptr object(new pcl::PointCloud<pcl::PointXYZ>);
+            float avg_range = 0;
             for (const auto &index : indices.indices)
             {
-                // Create a new pcl::PointXYZ object to store the modified point
-                pcl::PointXYZ modified_point = input_cloud->points[index];
-                modified_point.z += cluster_num * 3.0;
-
-                // Add the modified point to the cluster
-                cluster->points.push_back(modified_point);
+                const pcl::PointXYZ point = input_cloud->points[index];
+                avg_range += sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+                object->points.push_back(point);
             }
-            cluster->width = cluster->points.size();
-            cluster->height = 1;
-            cluster->is_dense = true;
+            avg_range /= indices.indices.size();
 
-            *object_cloud += *cluster;
+            object->width = object->points.size();
+            object->height = 1;
+            object->is_dense = true;
+
+            pcl::PointCloud<pcl::PointXYZ>::Ptr projection(new pcl::PointCloud<pcl::PointXYZ>);
+            for (auto &point : object->points)
+            {
+                const float range = sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+                const float mult = avg_range / range;
+
+                point.x = point.x * mult;
+                point.y = point.y * mult;
+                point.z = point.z * mult;
+
+                projection->points.push_back(point);
+            }
+
+
+            float dusty_metrics = 0.0;
+            // Build KdTree
+            pcl::KdTreeFLANN<pcl::PointXYZ> kdtree_proj;
+            kdtree_proj.setInputCloud(projection);
+
+            // Iterate through each point in the point cloud
+            for (size_t i = 0; i < projection->points.size(); ++i)
+            {
+                std::vector<int> nn_indices(5); // Store indices of nearest neighbors
+                std::vector<float> nn_proj_dists(5); // Store distances to nearest neighbors in "projection"
+                std::vector<float> nn_orig_dists(5); // Store distances to nearest neighbors
+
+                // Perform nearest neighbor search
+                kdtree_proj.nearestKSearch(projection->points[i], 4, nn_indices, nn_proj_dists);
+
+                // Retrieve corresponding points from the original object point cloud
+                int count = 0;
+                float point_jog = 0;
+                for (size_t j = 0; j < nn_indices.size(); ++j)
+                {
+                    int nn_index = nn_indices[j];
+                    if(nn_index == i) continue; // do not compare with itself
+                    count++;
+                    
+                    pcl::PointXYZ original_point = object->points[i]; // original analyzing point
+                    pcl::PointXYZ nn_point = object->points[nn_index]; // corresponding nearest neighbor point
+
+                    // Calculate the distance between the points
+                    nn_orig_dists[j] = sqrt(pow(original_point.x - nn_point.x, 2) +
+                                          pow(original_point.y - nn_point.y, 2) +
+                                          pow(original_point.z - nn_point.z, 2));
+                    
+                    point_jog+= nn_orig_dists[j] / nn_proj_dists[j];
+                }
+                dusty_metrics += point_jog;
+            }
+
+            dusty_metrics /= projection->points.size();
+
+            printf("%.2f ", dusty_metrics);
+
+            *rest_cloud += *object;
+
+
+            for (auto &point : projection->points)
+            {
+                point.z = point.z + dusty_metrics * 3;
+            }
+
+            *object_cloud += *projection;
 
             // Process or visualize the cluster as needed
         }
+        printf("\n");
 
         // Populate the rest of the points
         for (std::size_t i = 0; i < input_cloud->size(); ++i)
