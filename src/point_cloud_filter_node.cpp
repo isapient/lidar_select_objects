@@ -584,9 +584,9 @@ public:
                            pcl::PointCloud<pcl::PointXYZ>::Ptr &object_cloud,
                            pcl::PointCloud<pcl::PointXYZ>::Ptr &rest_cloud)
     {
-        int min_cluster_size = 9;      // Minimum number of points in a cluster 9 is okay both for 128 and 64 rings lidars
-        float cluster_tolerance = 4.5; // Cluster tolerance: 3 meters is enough for long range buildings (and this is actually baggy size)
-        bool low_res_metrics = (_ring_cnt <= 64) ? true: false;  // Low resolution metrics for 64 rings lidar
+        int min_cluster_size = 9;                                // Minimum number of points in a cluster 9 is okay both for 128 and 64 rings lidars
+        float cluster_tolerance = 4.5;                           // Cluster tolerance: 3 meters is enough for long range buildings (and this is actually baggy size)
+        bool low_res_metrics = (_ring_cnt <= 64) ? true : false; // Low resolution metrics for 64 rings lidar
 
         // Create a k-d tree for fast nearest neighbor searches
         pcl::search::KdTree<pcl::PointXYZ>::Ptr kd_tree(new pcl::search::KdTree<pcl::PointXYZ>);
@@ -674,9 +674,11 @@ public:
                 projection->points.push_back(point);
             }
 
-            const float penetrability_threshold = low_res_metrics ? 7 : 17; // 8.2      // reject most of cloud, save the trees
-            const float chaoticity_threshold = 1.6;    // reject non regular structures (having holes etc)
-            const int neighbor_count = 7;
+            const float penetrability_threshold = low_res_metrics ? 7 : 17;  // reject most of cloud, save the trees
+            const float chaoticity_threshold = 1.6;                          // reject non regular structures (dust, partially scanned objects)
+            const float sparseness_threshold = low_res_metrics ? 13.0 : 7.1; // reject too sparse cluster (dust, partially scanned objects)
+
+            const int neighbor_count = 7; // basic neighbour count for the analysis
 
             float penetrability = 0.0; // point variation along the lidar rays
             float sparseness = 0.0;    // relative average interpoint distance
@@ -718,7 +720,6 @@ public:
                     nn_orig_dists[j] = sqrt(pow(original_point.x - nn_point.x, 2) +
                                             pow(original_point.y - nn_point.y, 2) +
                                             pow(original_point.z - nn_point.z, 2));
-
 
                     // printf("%.0f;%.0f;  ", nn_orig_dists[j]*100, nn_proj_dists[j]*100);
 
@@ -763,7 +764,8 @@ public:
                     {
                         upper_avg_distance += nn_orig_dists[j];
                         upper_avg_count++;
-                    } else
+                    }
+                    else
                     {
 
                         lower_avg_distance += nn_orig_dists[j];
@@ -814,17 +816,20 @@ public:
             }
 
             // printf("%.1f  ", penetrability);
-            // printf("%.1f  ", sparseness);
-            printf("%.1f  ", chaoticity);
+            printf("%.1f  ", sparseness);
+            // printf("%.1f  ", chaoticity);
 
-            if (penetrability < penetrability_threshold && chaoticity < chaoticity_threshold)
+            if (penetrability < penetrability_threshold &&
+                chaoticity < chaoticity_threshold &&
+                sparseness < sparseness_threshold)
             {
                 *object_cloud += *object;
 
                 for (auto &point : projection->points) // DEBUG VISUALIZATION
                 {
-                    point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
+                    // point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
                     // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
+                    point.z = 30 + sparseness * 5; // DEBUG by observing altitude of objects
                 }
                 *object_cloud += *projection; // DEBUG
             }
@@ -834,9 +839,10 @@ public:
 
                 for (auto &point : projection->points) // DEBUG VISUALIZATION
                 {
-                    point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
+                    // point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
                     // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
-                }                           
+                    point.z = 30 + sparseness * 5; // DEBUG by observing altitude of objects
+                }
                 *rest_cloud += *projection; // DEBUG
             }
         }
