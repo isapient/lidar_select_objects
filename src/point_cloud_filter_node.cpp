@@ -675,7 +675,7 @@ public:
             }
 
             const float penetrability_threshold = low_res_metrics ? 7 : 17; // 8.2      // reject most of cloud, save the trees
-            const float chaoticity_threshold = 10 * 1.7;    // reject non regular structures (having holes etc)
+            const float chaoticity_threshold = 1.6;    // reject non regular structures (having holes etc)
             const int neighbor_count = 7;
 
             float penetrability = 0.0; // point variation along the lidar rays

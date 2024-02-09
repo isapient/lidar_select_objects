@@ -2,7 +2,7 @@
 <launch>
   <!-- Launch your point cloud filtering node -->
   <node name="lidar_filter_node" pkg="lidar_select_objects" type="point_cloud_filter_node" output="screen">
-    <param name="input_topic" type="string"  value="mbuggy/os3/points"/>
+    <param name="input_topic" type="string"  value="mbuggy/os1/points"/>
   </node>
 </launch>
 
