@@ -10,6 +10,8 @@ Second, other objects are clusterized and classified by "penetrability" metrics.
 
 The project still contains debug code parts, which should be removed during industrialization.
 
+Algorithm description: Lidar_Select_Objects.pdf
+
 ## Future Improvements
 
 - Second more accurate round of object clusterization based on primary clusters centroid

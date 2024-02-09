@@ -487,7 +487,7 @@ public:
         const int min_points_high = 8; // about 15%
 
         const float lowpart_sigma_shift = -0.7;    // keeping ~25% of samples under threshold
-        const float distillate_sigma_shift = +0.7; // keeping 75% of remaining samples (37% of total samples)
+        const float distillate_sigma_shift = +0.7; // keeping 75% of remaining samples (18% of total samples)
         const float normal_th_sigma_shift = +2.5;  // more than 3 sigma above average ground level
 
         const float no_correction = 0.0;   // 0 centimeters
@@ -623,7 +623,7 @@ public:
             }
         }
 
-        printf("%ld clusters found\n", cluster_indices.size());
+        // printf("%ld clusters found\n", cluster_indices.size());
         int cluster_num = 0;
 
         // Analyze the clusters properties: penetrability, chaoticity, and sparseness
@@ -816,7 +816,7 @@ public:
             }
 
             // printf("%.1f  ", penetrability);
-            printf("%.1f  ", sparseness);
+            // printf("%.1f  ", sparseness);
             // printf("%.1f  ", chaoticity);
 
             if (penetrability < penetrability_threshold &&
