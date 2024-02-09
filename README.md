@@ -19,6 +19,18 @@ INSTALLATION
 
    roslaunch lidar_select_objects lidar_select_objects.launch
 
+DOCKER
+
+Bild docker image
+docker build -t lidar_filter .
+
+Run container with mounted bag
+docker run -it --rm --name lidar_container     -v ~/LiDARFilteringAssignment.bag:/ros/bagfile     lidar_filter
+
+Feed it by data
+docker exec -it lidar_container /bin/bash -c "source /opt/ros/noetic/setup.bash && rosbag play /ros/bagfile"
+
+
 PARAMETERS
 
 Adjust z-coordinate threshold in the launch file.
