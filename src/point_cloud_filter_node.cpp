@@ -127,7 +127,7 @@ public:
         }
     }
 
-    void printGrids(const std::vector<float> &level1, const std::vector<float> &level2, const std::vector<float> &level3)
+    void debugPrintGrids(const std::vector<float> &level1, const std::vector<float> &level2, const std::vector<float> &level3)
     {
         float v;
         for (int y = 0; y < _map_h; y++)
@@ -211,11 +211,11 @@ public:
                     int size = aperture.size();
                     if (size % 2 == 1)
                     {
-                        dst[x + y * _map_w] = aperture[size / 2];
+                        dst[x + y * _map_w] = aperture[size / 2]; // odd rule (center element)
                     }
                     else
                     {
-                        dst[x + y * _map_w] = (aperture[size / 2 - 1] + aperture[size / 2]) / 2;
+                        dst[x + y * _map_w] = (aperture[size / 2 - 1] + aperture[size / 2]) / 2; // even rule (average of two center elements)
                     }
                 }
             }
@@ -280,7 +280,7 @@ public:
 
         // float probability = 0.99;
 
-        seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the axis along which we need to search for a model perpendicular to
+        seg.setAxis(Eigen::Vector3f(0., 0., 1.)); // Set the vertical axis along which we need to search for a model perpendicular to
         seg.setEpsAngle((7.f * M_PI) / 180.);     // Set maximum allowed difference between the model normal and the given axis in radians
         seg.setOptimizeCoefficients(true);        // Coefficient refinement is required
 
@@ -329,7 +329,7 @@ public:
                 if (underlying_th[cell_idx] == EMPTY_GRID)
                 {
                     result_grid[cell_idx] = EMPTY_GRID;
-                    // continue;
+                    continue;
                 }
 
                 for (int i = x1; i < x2; i++)
@@ -396,12 +396,12 @@ public:
             const float denominator = ransac_C;
             if (denominator > 0.00001f || denominator < -0.00001f)
             {
-                fine_plane.a = -ransac_A / denominator;
+                // convert A*x + B*y + C*z + D = 0 to z = a*x + b*y + c
+                fine_plane.a = -ransac_A / denominator; 
                 fine_plane.b = -ransac_B / denominator;
                 fine_plane.c = -ransac_D / denominator;
             }
         }
-        // convert A*x + B*y + C*z + D = 0 to z = a*x + b*y + c
 
         for (int y = 0; y < _map_h; y++)
         {
@@ -437,7 +437,7 @@ public:
     /**
      * @brief Save range aperture as PNG image (pure debug visualization)
      */
-    void saveRangeApertureAsPNG(const std::vector<float> &range_aperture, const std::string &filename)
+    void debugRangeApertureToPNG(const std::vector<float> &range_aperture, const std::string &filename)
     {
         int width = _ring_len;
         int height = _ring_cnt;
@@ -523,10 +523,10 @@ public:
                                                 rough_minradius,
                                                 rough_min_underground);
 
-        // printGrids(low_level, low_level, low_level);
+        // printGrids(low_level, low_level, low_level);        // DEBUG preliminary elevation levels filtration
 
         grid_median_recovery(half_level, half_level_med);
-        // printGrids(low_level, low_level_med, avg_level);
+        // printGrids(low_level, low_level_med, avg_level);    // DEBUG intermediate elevation levels extraction
 
         GroundPlane fine_plane = calcGridLevel(input_cloud,
                                                quarter_level,
@@ -541,7 +541,7 @@ public:
 
         grid_median_recovery(quarter_level, quarter_level_med);
 
-        // printGrids(low_level, avg_level, avg_level_med);
+        // printGrids(low_level, avg_level, avg_level_med);     // DEBUG intermediate elevation levels filtration
 
         GroundPlane perfect_plane = calcGridLevel(input_cloud,
                                                   th_level,
@@ -560,8 +560,8 @@ public:
         printf("fine_plane:    z = %.3f * x + %.3f *y + %.3f\t\t\t", fine_plane.a, fine_plane.b, fine_plane.c);
         printf("perfect_plane: z = %.3f * x + %.3f *y + %.3f\n", perfect_plane.a, perfect_plane.b, perfect_plane.c);
 
-        printGrids(half_level, quarter_level, th_level);
-        // printGrids(half_level_med, quarter_level_med, th_level_med);
+        debugPrintGrids(half_level, quarter_level, th_level);                // DEBUG scanned elevation levels
+        // printGrids(half_level_med, quarter_level_med, th_level_med); // DEBUG filtered elevation levels
 
         std::vector<float> range_aperture;
         applyGridLevel(input_cloud, plain_cloud, other_cloud,
@@ -569,6 +569,7 @@ public:
                        th_minradius,
                        range_aperture);
 
+        // PNG DEBUG the raw LiDARrange aperture with thresholds and classes applied
         // std::string filename = "/home/isap/dbg/range_aperture_" + std::to_string(10000 + frame_count) + ".png";
         // printf("%s ", filename.c_str());
         // saveRangeApertureAsPNG(range_aperture, filename);
@@ -710,9 +711,9 @@ public:
 
             printf("%.1f  ", penetrability);
 
-            // for (auto &point : projection->points) // DEBUG
+            // for (auto &point : projection->points) // DEBUG VISUALIZATION
             // {
-            //     point.z = -5 - penetrability * 2; // DEBUG
+            //     point.z = -5 - penetrability * 2; // DEBUG by observing altitude of objects
             // }
             // *rest_cloud += *projection; // DEBUG
 
@@ -743,9 +744,6 @@ public:
     // Constuctor for custom topic
     PointCloudFilterNode(const std::string &input_topic) : _input_topic(input_topic)
     {
-        // Initialize ROS node handle
-        // _nh = ros::NodeHandle("~"); // Private node handle for parameters
-
         // Subscribe to the input point cloud topic
         _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>(_input_topic, 1,
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
@@ -769,7 +767,7 @@ public:
         _ring_cnt = input_cloud->height; // 64 for os1, 128 for os2 and os3
         _ring_len = input_cloud->width;
 
-        printf("ring_cnt = %d, ring_len = %d\n", _ring_cnt, _ring_len);
+        // printf("ring_cnt = %d, ring_len = %d\n", _ring_cnt, _ring_len);
 
         // Create separate point cloud containers for objects and non-objects
         pcl::PointCloud<pcl::PointXYZ>::Ptr work_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -779,7 +777,7 @@ public:
         _cell_h = _ring_cnt / _map_h; // = 4
         _cell_w = _ring_len / _map_w; // = 32
 
-        printf("v_block = %d, h_block = %d\n", _cell_h, _cell_w);
+        // printf("v_block = %d, h_block = %d\n", _cell_h, _cell_w);
 
         findPlainPoints(pcl_cloud, ground_cloud, work_cloud);
 
@@ -832,7 +830,7 @@ private:
     int _cell_w;
 
     // scanning cell constants
-    static constexpr float UNKNOWN_GROUND = FLT_MIN;
+    static constexpr float UNKNOWN_GROUND = (-FLT_MAX);
     static constexpr float EMPTY_GRID = FLT_MAX;
 };
 
