@@ -586,6 +586,7 @@ public:
     {
         int min_cluster_size = 9;      // Minimum number of points in a cluster 9 is okay both for 128 and 64 rings lidars
         float cluster_tolerance = 4.5; // Cluster tolerance: 3 meters is enough for long range buildings (and this is actually baggy size)
+        bool low_res_metrics = (_ring_cnt <= 64) ? true: false;  // Low resolution metrics for 64 rings lidar
 
         // Create a k-d tree for fast nearest neighbor searches
         pcl::search::KdTree<pcl::PointXYZ>::Ptr kd_tree(new pcl::search::KdTree<pcl::PointXYZ>);
@@ -673,7 +674,7 @@ public:
                 projection->points.push_back(point);
             }
 
-            const float penetrability_threshold = 17; // 8.2      // reject most of cloud, save the trees
+            const float penetrability_threshold = low_res_metrics ? 7 : 17; // 8.2      // reject most of cloud, save the trees
             const float chaoticity_threshold = 10 * 1.7;    // reject non regular structures (having holes etc)
             const int neighbor_count = 7;
 
@@ -718,6 +719,7 @@ public:
                                             pow(original_point.y - nn_point.y, 2) +
                                             pow(original_point.z - nn_point.z, 2));
 
+
                     // printf("%.0f;%.0f;  ", nn_orig_dists[j]*100, nn_proj_dists[j]*100);
 
                     point_jog += pow(nn_orig_dists[j] / nn_proj_dists[j], 2) - 1;
@@ -761,8 +763,7 @@ public:
                     {
                         upper_avg_distance += nn_orig_dists[j];
                         upper_avg_count++;
-                    }
-                    else
+                    } else
                     {
 
                         lower_avg_distance += nn_orig_dists[j];
