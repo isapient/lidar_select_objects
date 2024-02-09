@@ -13,7 +13,7 @@ The project still contains debug code parts, which should be removed during indu
 Algorithm description: Lidar_Select_Objects.pdf
 
 ## Future Improvements
-
+- Reorganizing the parameters of the package: launch parameters and const parameters
 - Second more accurate round of object clusterization based on primary clusters centroid
 - Try to modify data collection to reach LiDAR second response; it can help in filtering dust.
 - Use EKF for LiDAR IMU, accumulate short history in the world coordinate system to remove dust cloud.
@@ -43,8 +43,10 @@ I use rqt_bag for recording bags and Foxglove Studio for visualizing both bag fi
 
 ## Docker
 
-1. Build Docker image:\
+1. Achieve Docker image:\
 docker build -t lidar_filter .
+or
+docker pull isapient/lidar_filter:latest
 
 2. Run container with mounted bag:\
 docker run -it --rm --name lidar_container -v ~/LiDARFilteringAssignment.bag:/ros/bagfile lidar_filter

@@ -556,11 +556,11 @@ public:
 
         grid_median_recovery(th_level, th_level_med);
 
-        printf("dirty_plane:   z = %.3f * x + %.3f *y + %.3f\t\t\t", dirty_plane.a, dirty_plane.b, dirty_plane.c);
-        printf("fine_plane:    z = %.3f * x + %.3f *y + %.3f\t\t\t", fine_plane.a, fine_plane.b, fine_plane.c);
-        printf("perfect_plane: z = %.3f * x + %.3f *y + %.3f\n", perfect_plane.a, perfect_plane.b, perfect_plane.c);
+        // printf("dirty_plane:   z = %.3f * x + %.3f *y + %.3f\t\t\t", dirty_plane.a, dirty_plane.b, dirty_plane.c);
+        // printf("fine_plane:    z = %.3f * x + %.3f *y + %.3f\t\t\t", fine_plane.a, fine_plane.b, fine_plane.c);
+        // printf("perfect_plane: z = %.3f * x + %.3f *y + %.3f\n", perfect_plane.a, perfect_plane.b, perfect_plane.c);
 
-        debugPrintGrids(half_level, quarter_level, th_level); // DEBUG scanned elevation levels
+        // debugPrintGrids(half_level, quarter_level, th_level); // DEBUG scanned elevation levels 
         // printGrids(half_level_med, quarter_level_med, th_level_med); // DEBUG filtered elevation levels
 
         std::vector<float> range_aperture;
@@ -575,7 +575,7 @@ public:
         // saveRangeApertureAsPNG(range_aperture, filename);
 
         frame_count++;
-        printf(" frame_count = %d\n", frame_count);
+        if(frame_count % 10 == 0) printf(" lidar frame count:  %d\n", frame_count);
     }
 
     // Cluster the point cloud and separate the objects from the dust by penetrability
@@ -846,7 +846,7 @@ public:
                 // *rest_cloud += *projection; // DEBUG
             }
         }
-        printf("\n");
+        // printf("\n");
 
         // Populate the rest of the points
         for (std::size_t i = 0; i < input_cloud->size(); ++i)
@@ -868,10 +868,15 @@ public:
         _input_cloud_sub = _nh.subscribe<sensor_msgs::PointCloud2>(_input_topic, 1,
                                                                    &PointCloudFilterNode::pointCloudCallback, this);
 
+        printf("lidar_filter_objects subscribed to topic: %s\n", _input_topic.c_str());
+
         // Create publishers for separated point clouds
         _object_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/signal", 1);
-        _ground_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/ground", 1);
+        // _ground_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/ground", 1);
         _noise_cloud_pub = _nh.advertise<sensor_msgs::PointCloud2>("/lidar_filter/noise", 1);
+
+        printf("lidar_filter_objects publishing topic: %s\n", "/lidar_filter/signal");
+        printf("lidar_filter_objects publishing topic: %s\n", "/lidar_filter/noise");
 
         // Set filtering parameters
         //
@@ -908,24 +913,27 @@ public:
         // Use the segmentation and extraction method
         clusterPointCloud(work_cloud, object_cloud, noise_cloud);
 
+
         // Publish the separated point clouds as ROS messages
         sensor_msgs::PointCloud2 object_ros_cloud;
         sensor_msgs::PointCloud2 noise_ros_cloud;
-        sensor_msgs::PointCloud2 ground_ros_cloud;
+        // sensor_msgs::PointCloud2 ground_ros_cloud;
+
+        *noise_cloud += *ground_cloud;
 
         pcl::toROSMsg(*object_cloud, object_ros_cloud);
         pcl::toROSMsg(*noise_cloud, noise_ros_cloud);
-        pcl::toROSMsg(*ground_cloud, ground_ros_cloud);
+        // pcl::toROSMsg(*ground_cloud, ground_ros_cloud);
 
         // Set the header information for ROS messages
         object_ros_cloud.header = input_cloud->header;
         noise_ros_cloud.header = input_cloud->header;
-        ground_ros_cloud.header = input_cloud->header;
+        // ground_ros_cloud.header = input_cloud->header;
 
         // Publish the separated point clouds
         _object_cloud_pub.publish(object_ros_cloud);
         _noise_cloud_pub.publish(noise_ros_cloud);
-        _ground_cloud_pub.publish(ground_ros_cloud);
+        // _ground_cloud_pub.publish(ground_ros_cloud);
     }
 
 private:
