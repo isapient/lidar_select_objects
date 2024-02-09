@@ -12,8 +12,10 @@ The project still contains debug code parts, which should be removed during indu
 
 ## Future Improvements
 
-- Use EKF for LiDAR IMU, accumulate short history in the world coordinate system to remove dust cloud.
+- Second more accurate round of object clusterization based on primary clusters centroid
 - Try to modify data collection to reach LiDAR second response; it can help in filtering dust.
+- Use EKF for LiDAR IMU, accumulate short history in the world coordinate system to remove dust cloud.
+- Fuse pictures from 3 lidars using full EKF localization with GPS, create Lidar SLAM
 
 ## Installation
 
@@ -31,7 +33,7 @@ The project still contains debug code parts, which should be removed during indu
    rosbag play ~/LiDARFilteringAssignment.bag
 
 5. Check output topics `/lidar_filter/signal` and `/lidar_filter/noise`\
-I use Foxglove Studio both for visualizing bag files and live streams.
+I use rqt_bag for recording bags and Foxglove Studio for visualizing both bag files and live streams.
 
 ## Parameters
 

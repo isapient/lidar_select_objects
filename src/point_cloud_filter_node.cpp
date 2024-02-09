@@ -397,7 +397,7 @@ public:
             if (denominator > 0.00001f || denominator < -0.00001f)
             {
                 // convert A*x + B*y + C*z + D = 0 to z = a*x + b*y + c
-                fine_plane.a = -ransac_A / denominator; 
+                fine_plane.a = -ransac_A / denominator;
                 fine_plane.b = -ransac_B / denominator;
                 fine_plane.c = -ransac_D / denominator;
             }
@@ -560,7 +560,7 @@ public:
         printf("fine_plane:    z = %.3f * x + %.3f *y + %.3f\t\t\t", fine_plane.a, fine_plane.b, fine_plane.c);
         printf("perfect_plane: z = %.3f * x + %.3f *y + %.3f\n", perfect_plane.a, perfect_plane.b, perfect_plane.c);
 
-        debugPrintGrids(half_level, quarter_level, th_level);                // DEBUG scanned elevation levels
+        debugPrintGrids(half_level, quarter_level, th_level); // DEBUG scanned elevation levels
         // printGrids(half_level_med, quarter_level_med, th_level_med); // DEBUG filtered elevation levels
 
         std::vector<float> range_aperture;
@@ -585,7 +585,7 @@ public:
                            pcl::PointCloud<pcl::PointXYZ>::Ptr &rest_cloud)
     {
         int min_cluster_size = 9;      // Minimum number of points in a cluster 9 is okay both for 128 and 64 rings lidars
-        float cluster_tolerance = 3.5; // Cluster tolerance: 3 meters is enough for long range buildings (and this is actually baggy size)
+        float cluster_tolerance = 4.5; // Cluster tolerance: 3 meters is enough for long range buildings (and this is actually baggy size)
 
         // Create a k-d tree for fast nearest neighbor searches
         pcl::search::KdTree<pcl::PointXYZ>::Ptr kd_tree(new pcl::search::KdTree<pcl::PointXYZ>);
@@ -625,41 +625,64 @@ public:
         printf("%ld clusters found\n", cluster_indices.size());
         int cluster_num = 0;
 
-        // Output the clusters
+        // Analyze the clusters properties: penetrability, chaoticity, and sparseness
         for (const auto &indices : cluster_indices)
         {
             cluster_num++;
             pcl::PointCloud<pcl::PointXYZ>::Ptr object(new pcl::PointCloud<pcl::PointXYZ>);
-            float avg_range = 0;
+            float object_range = 0;
+            int points_in_object = 0;
             for (const auto &index : indices.indices)
             {
                 const pcl::PointXYZ point = input_cloud->points[index];
-                avg_range += sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+                if (point.x == 0 && point.y == 0 && point.z == 0)
+                    continue;
+                points_in_object++;
+                object_range += sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
                 object->points.push_back(point);
             }
-            avg_range /= indices.indices.size();
+            if (points_in_object > 0)
+                object_range /= points_in_object;
 
-            object->width = object->points.size();
+            object->width = points_in_object;
             object->height = 1;
             object->is_dense = true;
 
-            pcl::PointCloud<pcl::PointXYZ>::Ptr projection(new pcl::PointCloud<pcl::PointXYZ>);
-            for (auto &point : object->points)
+            if (points_in_object < min_cluster_size)
             {
-                const float range = sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
-                const float mult = avg_range / range;
+                *rest_cloud += *object;
 
-                point.x = point.x * mult;
-                point.y = point.y * mult;
-                point.z = point.z * mult;
+                // for (auto &point : object->points) // DEBUG VISUALIZATION
+                //     point.z = 30;                  // DEBUG by observing altitude of objects
+                // *object_cloud += *object;          // DEBUG
+
+                continue;
+            }
+
+            // project the object to the sphere to find nearest LiDAR pulses
+            pcl::PointCloud<pcl::PointXYZ>::Ptr projection(new pcl::PointCloud<pcl::PointXYZ>);
+            for (auto &original_point : object->points)
+            {
+                pcl::PointXYZ point = original_point;
+                const float range = sqrt(point.x * point.x + point.y * point.y + point.z * point.z);
+                const float mult = object_range / range;
+                point.x *= mult;
+                point.y *= mult;
+                point.z *= mult;
 
                 projection->points.push_back(point);
             }
 
-            const float penetrability_threshold = 8.2; // minimal passing the trees
+            const float penetrability_threshold = 17; // 8.2      // reject most of cloud, save the trees
+            const float chaoticity_threshold = 10 * 1.7;    // reject non regular structures (having holes etc)
+            const int neighbor_count = 7;
 
-            float penetrability = 0.0;
-            const int neighbor_count = 9;
+            float penetrability = 0.0; // point variation along the lidar rays
+            float sparseness = 0.0;    // relative average interpoint distance
+            float chaoticity = 0.0;    // variation of point distance distribution skewness
+
+            float skewness_m1 = 0.0;
+            float skewness_m2 = 0.0;
 
             // Build KdTree
             pcl::KdTreeFLANN<pcl::PointXYZ> kdtree_proj;
@@ -672,11 +695,14 @@ public:
                 std::vector<float> nn_orig_dists(neighbor_count + 1); // Store distances to nearest neighbors
 
                 // Perform nearest neighbor search
-                kdtree_proj.nearestKSearch(projection->points[i], 4, nn_indices, nn_proj_dists);
+                kdtree_proj.nearestKSearch(projection->points[i], neighbor_count, nn_indices, nn_proj_dists);
 
                 // Retrieve corresponding points from the original object point cloud
                 int count = 0;
                 float point_jog = 0;
+                float neighbor_relative_distance = 0;
+                float avg_distance = 0;
+
                 for (size_t j = 0; j < nn_indices.size(); ++j)
                 {
                     int nn_index = nn_indices[j];
@@ -692,38 +718,125 @@ public:
                                             pow(original_point.y - nn_point.y, 2) +
                                             pow(original_point.z - nn_point.z, 2));
 
+                    // printf("%.0f;%.0f;  ", nn_orig_dists[j]*100, nn_proj_dists[j]*100);
+
                     point_jog += pow(nn_orig_dists[j] / nn_proj_dists[j], 2) - 1;
+                    // point_jog += nn_orig_dists[j] / nn_proj_dists[j];
+                    neighbor_relative_distance += pow(nn_orig_dists[j], 2);
+                    avg_distance += nn_orig_dists[j];
                 }
+
+                // penetrability and sparseness
                 if (count > 0)
                 {
                     point_jog /= count;
                     if (point_jog >= 0)
                     {
                         penetrability += sqrt(point_jog);
+                        // penetrability += point_jog;
+                    }
+
+                    neighbor_relative_distance /= count;
+                    if (neighbor_relative_distance >= 0)
+                    {
+                        sparseness += sqrt(neighbor_relative_distance);
+                    }
+
+                    avg_distance /= count;
+                }
+
+                // Calculate chaoicity
+
+                float upper_avg_distance = 0;
+                float lower_avg_distance = 0;
+                int upper_avg_count = 0;
+                int lower_avg_count = 0;
+
+                for (size_t j = 0; j < nn_indices.size(); ++j)
+                {
+                    int nn_index = nn_indices[j];
+                    if (nn_index == i)
+                        continue; // do not compare with itself
+                    if (nn_orig_dists[j] > avg_distance)
+                    {
+                        upper_avg_distance += nn_orig_dists[j];
+                        upper_avg_count++;
+                    }
+                    else
+                    {
+
+                        lower_avg_distance += nn_orig_dists[j];
+                        lower_avg_count++;
                     }
                 }
+                if (upper_avg_count > 0)
+                    upper_avg_distance /= upper_avg_count;
+                else
+                    upper_avg_distance = FLT_MAX;
+
+                if (lower_avg_count > 0)
+                    lower_avg_distance /= lower_avg_count;
+                else
+                    lower_avg_distance = FLT_MIN;
+
+                float skewness = (lower_avg_distance / upper_avg_distance);
+
+                skewness_m1 += skewness;
+                skewness_m2 += skewness * skewness;
             }
+
             const int size = projection->points.size();
+
             if (size > 0)
                 penetrability /= size;
             else
                 penetrability = FLT_MAX;
 
-            printf("%.1f  ", penetrability);
+            if (size > 0 && object_range > 0.00001f)
+            {
+                sparseness /= object_range * size;
+                sparseness *= 100; // percentage
+            }
+            else
+                sparseness = FLT_MAX;
 
-            // for (auto &point : projection->points) // DEBUG VISUALIZATION
-            // {
-            //     point.z = -5 - penetrability * 2; // DEBUG by observing altitude of objects
-            // }
-            // *rest_cloud += *projection; // DEBUG
+            if (size > 0)
+            {
+                skewness_m1 /= size;
+                skewness_m2 /= size;
+                chaoticity = sqrt(skewness_m2 - skewness_m1 * skewness_m1);
+                chaoticity *= 10; // normalize to ~10
+            }
+            else
+            {
+                chaoticity = FLT_MAX;
+            }
 
-            if (penetrability < penetrability_threshold)
+            // printf("%.1f  ", penetrability);
+            // printf("%.1f  ", sparseness);
+            printf("%.1f  ", chaoticity);
+
+            if (penetrability < penetrability_threshold && chaoticity < chaoticity_threshold)
             {
                 *object_cloud += *object;
+
+                for (auto &point : projection->points) // DEBUG VISUALIZATION
+                {
+                    point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
+                    // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
+                }
+                *object_cloud += *projection; // DEBUG
             }
             else
             {
                 *rest_cloud += *object;
+
+                for (auto &point : projection->points) // DEBUG VISUALIZATION
+                {
+                    point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
+                    // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
+                }                           
+                *rest_cloud += *projection; // DEBUG
             }
         }
         printf("\n");
@@ -741,7 +854,7 @@ public:
         rest_cloud->is_dense = true;
     }
 
-    // Constuctor for custom topic
+    // Constructor for custom topic
     PointCloudFilterNode(const std::string &input_topic) : _input_topic(input_topic)
     {
         // Subscribe to the input point cloud topic
