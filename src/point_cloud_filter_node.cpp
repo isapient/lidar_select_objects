@@ -494,13 +494,13 @@ public:
         const float min_correction = 0.10; // add 5 centimeters (about lidar linear accuracy)
         const float big_correction = 0.25; // add more over ground level
 
-        const float rough_ground_radius = 10.0f; // estimate ground in this radius
-        const float fine_ground_radius = 15.0f;  // estimate ground in this radius
-        const float th_ground_radius = 25.0f;    // estimate ground in this radius
+        const float rough_ground_radius = 15.0f; // estimate ground in this radius
+        const float fine_ground_radius = 20.0f;  // estimate ground in this radius
+        const float th_ground_radius = 20.0f;    // estimate ground in this radius
 
-        const float rough_minradius = 7.0f; // longer than dust body size
+        const float rough_minradius = 3.0f; // longer than dust body size
         const float fine_minradius = 5.0f;  // buggy body size
-        const float th_minradius = 3.0f;    // buggy body size
+        const float th_minradius = 5.0f;    // buggy body size
 
         const float rough_min_underground = 3.0f;
         const float fine_min_underground = 0.5f;
@@ -825,25 +825,25 @@ public:
             {
                 *object_cloud += *object;
 
-                for (auto &point : projection->points) // DEBUG VISUALIZATION
-                {
-                    // point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
-                    // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
-                    point.z = 30 + sparseness * 5; // DEBUG by observing altitude of objects
-                }
-                *object_cloud += *projection; // DEBUG
+                // for (auto &point : projection->points) // DEBUG VISUALIZATION
+                // {
+                //     // point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
+                //     // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
+                //     point.z = 30 + sparseness * 5; // DEBUG by observing altitude of objects
+                // }
+                // *object_cloud += *projection; // DEBUG
             }
             else
             {
                 *rest_cloud += *object;
 
-                for (auto &point : projection->points) // DEBUG VISUALIZATION
-                {
-                    // point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
-                    // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
-                    point.z = 30 + sparseness * 5; // DEBUG by observing altitude of objects
-                }
-                *rest_cloud += *projection; // DEBUG
+                // for (auto &point : projection->points) // DEBUG VISUALIZATION
+                // {
+                //     // point.z = 30 + chaoticity * 20; // DEBUG by observing altitude of objects
+                //     // point.z = 30 + penetrability * 4; // DEBUG by observing altitude of objects
+                //     point.z = 30 + sparseness * 5; // DEBUG by observing altitude of objects
+                // }
+                // *rest_cloud += *projection; // DEBUG
             }
         }
         printf("\n");
